@@ -1,3 +1,18 @@
+
+> ### AutoDroid-WDA
+>
+> 本仓库是 **[AutoDroid](https://github.com/liqiu-debug/AutoDroid)** 自动化测试平台的 iOS 设备端执行器 fork，
+> 目标：让 iOS 手机**不接电脑**就能自启 WDA 会话、执行平台下发的脚本并回传结果
+> （Android 侧对应 [AutoDroid-Android](https://github.com/liqiu-debug/AutoDroid-Android)）。
+>
+> - 构建 / 安装 / 「点图标启动」说明与版本适配矩阵：[`autodroid/README.md`](autodroid/README.md)
+> - 一键构建 IPA：`autodroid/build_ipa.sh`（自动签名传 `TEAM_ID`），重签：`autodroid/resign.sh`
+> - 本 fork 基于 WDA `16.15.3`（上游 BSD 许可），改动集中在 `autodroid/` 目录，保持可同步上游
+>
+> 以下为上游 WebDriverAgent 的原始文档。
+
+******
+
 # WebDriverAgent
 
 [![NPM version](http://img.shields.io/npm/v/appium-webdriveragent.svg)](https://npmjs.org/package/appium-webdriveragent)

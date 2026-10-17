@@ -1,0 +1,3 @@
+# .derivedData/ 与 out/ 是本地构建产物
+.derivedData/
+out/
