@@ -801,7 +801,6 @@
 		8934D96BE720E53106DCFA6C /* XCUIElement+FBResolve.m in Sources */ = {isa = PBXBuildFile; fileRef = 71D3B3D4267FC7260076473D /* XCUIElement+FBResolve.m */; };
 		8935209ECEC079F126FBDFAC /* XCTSkippedTestContext.h in Headers */ = {isa = PBXBuildFile; fileRef = 8C32C75CC17179B347DF6F78 /* XCTSkippedTestContext.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		8A8D9B0342BC43BEB65749B7 /* XCUILocation.h in Headers */ = {isa = PBXBuildFile; fileRef = A8230FDD93639CE2E9EFE311 /* XCUILocation.h */; settings = {ATTRIBUTES = (Public, ); }; };
-		8A8DFD7796904F8ACA67186F /* adapter.js in Resources */ = {isa = PBXBuildFile; fileRef = 725A95DE7041A1263CC76536 /* adapter.js */; };
 		8AAA33A5B1943B667B0DB05E /* FBMacros.h in Headers */ = {isa = PBXBuildFile; fileRef = EE9B76A51CF7A43900275851 /* FBMacros.h */; };
 		8CB293E6451EB1A6D1240BAA /* XCTElementSetTransformer-Protocol.h in Headers */ = {isa = PBXBuildFile; fileRef = 1BA7DD8C206D694B007C7C26 /* XCTElementSetTransformer-Protocol.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		8D04F8FC7260CDC39C84B0C5 /* FBWebServer.m in Sources */ = {isa = PBXBuildFile; fileRef = EE9AB78D1CAEDF0C008C271F /* FBWebServer.m */; };
@@ -1734,7 +1733,6 @@
 		721E280BFFEFFD40C89277AF /* AppDelegate.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = AppDelegate.m; sourceTree = "<group>"; };
 		722E62C63348A451A351524B /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/AppleTVOS.platform/Developer/SDKs/AppleTVOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		72519967DBAAC567B40AA1A2 /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		725A95DE7041A1263CC76536 /* adapter.js */ = {isa = PBXFileReference; includeInIndex = 1; name = adapter.js; path = autodroid/adapter.js; sourceTree = "<group>"; };
 		74AA57E9A81B1B0515CB587F /* XCTMessagingRole_SelfDiagnosisIssueReporting-Protocol.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = "XCTMessagingRole_SelfDiagnosisIssueReporting-Protocol.h"; sourceTree = "<group>"; };
 		74FB18A20255DDF3F2C5FD18 /* libXCTestSwiftSupport.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = libXCTestSwiftSupport.dylib; path = Developer/usr/lib/libXCTestSwiftSupport.dylib; sourceTree = PLATFORM_DIR; };
 		75438FC693C39052C82C27DB /* XCUIApplicationRegistry.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = XCUIApplicationRegistry.h; sourceTree = "<group>"; };
@@ -2312,7 +2310,6 @@
 				91F9DAEA1B99DBC2001349B2 /* Products */,
 				B6E83A410C45944B036B6B0F /* Frameworks */,
 				AD42DD291CF121E600806E5D /* Modules */,
-				725A95DE7041A1263CC76536 /* adapter.js */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -4409,7 +4406,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				8A8DFD7796904F8ACA67186F /* adapter.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

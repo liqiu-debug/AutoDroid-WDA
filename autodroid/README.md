@@ -68,10 +68,43 @@ xcodebuild test-without-building \
 - **内存压力下 runner 可能被系统杀掉**，定时任务执行前应先检查 `/status`，不存活则重新激活。
 - 设备需要在设置里打开**开发者模式**，且首次安装需要信任证书。
 
-## 后续计划（执行器补丁，尚未实现）
+## 设备端执行器（已实现）
 
-1. 新增 `/autodroid/status|run|stop` 路由（`WebDriverAgentLib/Commands/` + `FBWebServer` 注册）；
-2. 内嵌 **JavaScriptCore** 运行平台下发的 `runtime.js`（与 Android 侧同一份执行器，语义不分叉）；
-3. 适配层：把 `runtime.js` 依赖的 AutoJs6 API 映射到 WDA 自身的 HTTP 接口（`127.0.0.1:8100`）；
-4. 报告直传平台（复用 `/device-runs/report` 的 `run_id` 幂等契约）；
-5. 图像类动作（模板匹配 / SSIM）先由平台预检拦截，OCR 走 iOS **Vision** 框架实现。
+fork 在 WDA 之上增加了 AutoDroid 执行器，让设备自己执行平台下发的脚本包：
+
+| 组件 | 说明 |
+|---|---|
+| `WebDriverAgentLib/AutoDroid/ADTRunner` | 接收脚本包 → 落盘到 `Documents/autodroid_runs/<run_id>/` → 用 JavaScriptCore 执行 → 回传结果（回传由包内 runtime.js 完成） |
+| `WebDriverAgentLib/AutoDroid/ADTPrimitives` | 原生原语（元素查询复用 WDA 的 `XCUIElement+FBFind`、点击/输入/滑动走 XCTest、截图与坐标按 scale 换算） |
+| `WebDriverAgentLib/AutoDroid/ADTImageTools` | 模板匹配（积分图 + 粗筛/精修 NCC，对齐 PC 侧 TM_CCOEFF_NORMED）、SSIM、OCR（Vision） |
+| `WebDriverAgentLib/Commands/ADTAutoDroidCommands` | `GET /autodroid/status`、`POST /autodroid/run`、`POST /autodroid/stop`、`GET /autodroid/logs` |
+
+**适配层不在这里**：AutoJs6 API 兼容层（`adapter.js`）由平台随脚本包下发
+（平台仓库 `backend/autojs_export/adapters/ios_adapter.js`，包内字段 `adapter_js`），
+执行器优先使用包内适配层 —— 这样**改适配层不需要重新签名/安装 WDA**。
+
+## 真机验证（Phase 0）
+
+真机到手后按顺序做：
+
+```bash
+# 1) 手机点 WDA 图标启动，然后在同一网络的本机执行自动检查
+autodroid/verify_device.sh http://<手机IP>:8100 --platform-repo ../AutoDroid
+
+# 2) 只跑平台侧自检（下发自检包 → 执行 → 等结果）
+cd ../AutoDroid && .venv/bin/python -m backend.autojs_export.selftest --url http://<手机IP>:8100
+
+# 3) 无真机时先做 JS 链路验证（Node 扮演原生原语，覆盖 runtime.js + 适配层 + 报告载荷）
+cd ../AutoDroid && .venv/bin/python -m unittest backend.tests.test_ios_runtime_harness
+```
+
+自检包会启动「设置」、截图 + OCR、滑动、返回、回桌面，不依赖任何业务应用与界面语言。
+
+脚本无法替代、需要人工确认的项：
+点图标启动是否成功、重启后是否还能启动、锁屏/后台 2 分钟后会话是否还在、证书 7 天续期流程。
+
+## 原生层尚未验证的部分
+
+`ADTPrimitives` / `ADTImageTools` 里的 XCTest 与 Vision 调用只能在真机或 iOS 模拟器上验证
+（元素查询语义、坐标换算、模板匹配精度、OCR 语言与阈值）。模拟器上可以先用同一套自检包
+跑通流程，再上真机复核。

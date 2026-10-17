@@ -190,14 +190,27 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
         if (request[@"notify"] != nil) {
             runtimeConfig[@"notify"] = request[@"notify"];
         }
+        // 目标平台固定为 ios：runtime.js 据此裁剪 execute_on 不匹配的步骤
+        runtimeConfig[@"platform"] = @"ios";
         NSData *configData = [NSJSONSerialization dataWithJSONObject:runtimeConfig options:0 error:NULL];
         NSString *configJson = configData != nil ? [[NSString alloc] initWithData:configData encoding:NSUTF8StringEncoding] : @"{}";
         [context evaluateScript:[NSString stringWithFormat:@"globalThis.__AUTODROID__ = %@;", configJson]];
 
-        NSString *adapterSource = [self adapterSource];
+        // 适配层优先取脚本包里的 adapter_js（平台随包下发，改适配层无需重装 WDA）
+        NSString *adapterSource = [bundle[@"adapter_js"] isKindOfClass:NSString.class] ? bundle[@"adapter_js"] : nil;
         if (adapterSource.length == 0) {
-            @throw [NSException exceptionWithName:@"ADTRunnerError" reason:@"缺少适配层 adapter.js（资源未随包打入）" userInfo:nil];
+            adapterSource = [self adapterSource];
         }
+        if (adapterSource.length == 0) {
+            @throw [NSException exceptionWithName:@"ADTRunnerError"
+                                           reason:@"脚本包缺少 adapter_js（平台需下发 iOS 适配层，或改用内置适配层构建）"
+                                         userInfo:nil];
+        }
+        // 落盘便于排查（运行目录里保留本次实际使用的适配层）
+        [adapterSource writeToFile:[baseDir stringByAppendingPathComponent:@"adapter.js"]
+                        atomically:YES
+                          encoding:NSUTF8StringEncoding
+                             error:NULL];
         [context evaluateScript:adapterSource];
         if (context.exception != nil) {
             @throw [NSException exceptionWithName:@"ADTRunnerError"
@@ -326,6 +339,7 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
 
 #pragma mark - 适配层资源
 
+/// 内置兜底适配层（正常路径由脚本包下发的 adapter_js 提供；此处仅在资源存在时生效）
 - (NSString *)adapterSource
 {
     NSBundle *bundle = [NSBundle bundleForClass:ADTRunner.class];
