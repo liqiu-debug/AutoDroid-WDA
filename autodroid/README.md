@@ -103,6 +103,25 @@ cd ../AutoDroid && .venv/bin/python -m unittest backend.tests.test_ios_runtime_h
 脚本无法替代、需要人工确认的项：
 点图标启动是否成功、重启后是否还能启动、锁屏/后台 2 分钟后会话是否还在、证书 7 天续期流程。
 
+## 在模拟器上先跑一遍（可选，但推荐）
+
+模拟器能覆盖原生层（XCTest 元素查询、坐标换算、Vision OCR、模板匹配），比真机迭代快。
+前提是 Xcode 里已安装 iOS 模拟器运行时：
+
+1. Xcode → Settings → Components → 下载 **iOS Simulator** 运行时（需在 Xcode 中登录 Apple ID，
+   命令行 `xcodebuild -downloadPlatform iOS` 在没有交互式认证时不会推进）；
+2. 之后即可：
+
+```bash
+# 构建并装到模拟器（无需签名）
+xcodebuild build-for-testing -project WebDriverAgent.xcodeproj -scheme WebDriverAgentRunner \
+  -destination 'platform=iOS Simulator,name=iPhone 17' -derivedDataPath /tmp/wda-sim
+xcodebuild test-without-building -project WebDriverAgent.xcodeproj -scheme WebDriverAgentRunner \
+  -destination 'platform=iOS Simulator,name=iPhone 17' -derivedDataPath /tmp/wda-sim &
+# 然后跑平台侧自检（模拟器上 WDA 监听本机 8100）
+cd ../AutoDroid && .venv/bin/python -m backend.autojs_export.selftest --url http://127.0.0.1:8100
+```
+
 ## 原生层尚未验证的部分
 
 `ADTPrimitives` / `ADTImageTools` 里的 XCTest 与 Vision 调用只能在真机或 iOS 模拟器上验证
