@@ -22,13 +22,40 @@
 #import "FBElement.h"
 #import "FBKeyboard.h"
 #import "FBSession.h"
+#import "FBUnattachedAppLauncher.h"
 #import "NSPredicate+FBFormat.h"
 #import "XCUIApplication+FBHelpers.h"
+#import "XCUIApplication+FBQuiescence.h"
 #import "XCUIApplication.h"
 #import "XCUIElement+FBFind.h"
 #import "XCUIElement+FBTyping.h"
 #import "XCUIElement+FBUtilities.h"
 #import "XCUIElement+FBWebDriverAttributes.h"
+
+// XCTest application creation, screenshots and lifecycle calls must use the
+// main thread. AutoDroid scripts run on ADTRunner's serial background queue,
+// unlike the normal WDA HTTP route queue. Keep script waits on the worker and
+// marshal these native calls explicitly.
+static void ADTPerformOnMainThread(dispatch_block_t block)
+{
+    if ([NSThread isMainThread]) {
+        block();
+    } else {
+        // Exceptions must be caught on the executing thread, not allowed to
+        // unwind through libdispatch. Report them back to the script caller.
+        __block NSException *failure = nil;
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            @try {
+                block();
+            } @catch (NSException *exception) {
+                failure = exception;
+            }
+        });
+        if (failure != nil) {
+            @throw failure;
+        }
+    }
+}
 
 #pragma mark - XML 节点解析（页面签名 / sourceNodes）
 
@@ -163,6 +190,11 @@ didStartElement:(NSString *)elementName
 
 - (XCUIApplication *)targetApplication
 {
+    if (![NSThread isMainThread]) {
+        __block XCUIApplication *application = nil;
+        ADTPerformOnMainThread(^{ application = [self targetApplication]; });
+        return application;
+    }
     if (self.activeBundleID.length > 0) {
         XCUIApplication *cached = self.applicationCache[self.activeBundleID];
         if (cached != nil) {
@@ -181,6 +213,11 @@ didStartElement:(NSString *)elementName
 
 - (CGFloat)screenScale
 {
+    if (![NSThread isMainThread]) {
+        __block CGFloat scale = 1.0;
+        ADTPerformOnMainThread(^{ scale = [self screenScale]; });
+        return scale;
+    }
     UIImage *image = [self rawScreenshot];
     CGFloat pixelWidth = 0;
     if (image != nil) {
@@ -204,6 +241,11 @@ didStartElement:(NSString *)elementName
 
 - (nullable UIImage *)rawScreenshot
 {
+    if (![NSThread isMainThread]) {
+        __block UIImage *image = nil;
+        ADTPerformOnMainThread(^{ image = [self rawScreenshot]; });
+        return image;
+    }
     XCUIScreen *screen = XCUIScreen.mainScreen;
     if (screen == nil) {
         return nil;
@@ -217,6 +259,11 @@ didStartElement:(NSString *)elementName
 
 - (NSDictionary *)deviceInfo
 {
+    if (![NSThread isMainThread]) {
+        __block NSDictionary * result = nil;
+        ADTPerformOnMainThread(^{ result = [self deviceInfo]; });
+        return result;
+    }
     UIImage *image = [self rawScreenshot];
     CGFloat pixelWidth = 0;
     CGFloat pixelHeight = 0;
@@ -411,6 +458,11 @@ didStartElement:(NSString *)elementName
 
 - (NSArray<NSNumber *> *)findElements:(NSString *)specJson
 {
+    if (![NSThread isMainThread]) {
+        __block NSArray<NSNumber *> * result = nil;
+        ADTPerformOnMainThread(^{ result = [self findElements:specJson]; });
+        return result;
+    }
     NSDictionary *spec = [self parseSpec:specJson];
     if (spec == nil) {
         return @[];
@@ -459,6 +511,11 @@ didStartElement:(NSString *)elementName
 
 - (NSString *)jsElementAttribute:(double)elementId name:(NSString *)name
 {
+    if (![NSThread isMainThread]) {
+        __block NSString * result = nil;
+        ADTPerformOnMainThread(^{ result = [self jsElementAttribute:elementId name:name]; });
+        return result;
+    }
     XCUIElement *element = [self elementForId:elementId];
     if (element == nil) {
         return @"";
@@ -506,6 +563,11 @@ didStartElement:(NSString *)elementName
 
 - (nullable NSDictionary *)elementRect:(double)elementId
 {
+    if (![NSThread isMainThread]) {
+        __block NSDictionary * result = nil;
+        ADTPerformOnMainThread(^{ result = [self elementRect:elementId]; });
+        return result;
+    }
     XCUIElement *element = [self elementForId:elementId];
     if (element == nil) {
         return nil;
@@ -520,6 +582,11 @@ didStartElement:(NSString *)elementName
 
 - (BOOL)elementClick:(double)elementId
 {
+    if (![NSThread isMainThread]) {
+        __block BOOL result = NO;
+        ADTPerformOnMainThread(^{ result = [self elementClick:elementId]; });
+        return result;
+    }
     XCUIElement *element = [self elementForId:elementId];
     if (element == nil) {
         return NO;
@@ -538,6 +605,11 @@ didStartElement:(NSString *)elementName
 
 - (BOOL)elementLongClick:(double)elementId
 {
+    if (![NSThread isMainThread]) {
+        __block BOOL result = NO;
+        ADTPerformOnMainThread(^{ result = [self elementLongClick:elementId]; });
+        return result;
+    }
     XCUIElement *element = [self elementForId:elementId];
     if (element == nil) {
         return NO;
@@ -560,13 +632,20 @@ didStartElement:(NSString *)elementName
         return NO;
     }
     @try {
-        if (!element.exists) {
+        __block BOOL exists = NO;
+        ADTPerformOnMainThread(^{
+            exists = element.exists;
+            if (exists) {
+                [element tap];
+            }
+        });
+        if (!exists) {
             return NO;
         }
-        [element tap];
         [NSThread sleepForTimeInterval:0.4];
-        NSError *error = nil;
-        BOOL ok = [element fb_typeText:text shouldClear:NO error:&error];
+        __block NSError *error = nil;
+        __block BOOL ok = NO;
+        ADTPerformOnMainThread(^{ ok = [element fb_typeText:text shouldClear:YES error:&error]; });
         if (!ok) {
             [self appendLog:@"warn" message:[NSString stringWithFormat:@"setText 失败: %@", error.localizedDescription ?: @""]];
         }
@@ -578,6 +657,11 @@ didStartElement:(NSString *)elementName
 
 - (NSArray<NSDictionary *> *)sourceNodes
 {
+    if (![NSThread isMainThread]) {
+        __block NSArray<NSDictionary *> * result = nil;
+        ADTPerformOnMainThread(^{ result = [self sourceNodes]; });
+        return result;
+    }
     XCUIApplication *app = [self targetApplication];
     if (app == nil) {
         return @[];
@@ -624,6 +708,11 @@ didStartElement:(NSString *)elementName
 
 - (nullable XCUICoordinate *)pixelCoordinate:(CGFloat)pixelX y:(CGFloat)pixelY
 {
+    if (![NSThread isMainThread]) {
+        __block XCUICoordinate * result = nil;
+        ADTPerformOnMainThread(^{ result = [self pixelCoordinate:pixelX y:pixelY]; });
+        return result;
+    }
     XCUIApplication *app = [self targetApplication];
     if (app == nil) {
         return nil;
@@ -641,6 +730,11 @@ didStartElement:(NSString *)elementName
 
 - (BOOL)jsTap:(double)x y:(double)y
 {
+    if (![NSThread isMainThread]) {
+        __block BOOL result = NO;
+        ADTPerformOnMainThread(^{ result = [self jsTap:x y:y]; });
+        return result;
+    }
     XCUICoordinate *coordinate = [self pixelCoordinate:x y:y];
     if (coordinate == nil) {
         return NO;
@@ -655,6 +749,11 @@ didStartElement:(NSString *)elementName
 
 - (BOOL)jsLongPress:(double)x y:(double)y duration:(double)duration
 {
+    if (![NSThread isMainThread]) {
+        __block BOOL result = NO;
+        ADTPerformOnMainThread(^{ result = [self jsLongPress:x y:y duration:duration]; });
+        return result;
+    }
     XCUICoordinate *coordinate = [self pixelCoordinate:x y:y];
     if (coordinate == nil) {
         return NO;
@@ -669,6 +768,11 @@ didStartElement:(NSString *)elementName
 
 - (BOOL)jsDrag:(double)x1 y1:(double)y1 x2:(double)x2 y2:(double)y2 duration:(double)duration
 {
+    if (![NSThread isMainThread]) {
+        __block BOOL result = NO;
+        ADTPerformOnMainThread(^{ result = [self jsDrag:x1 y1:y1 x2:x2 y2:y2 duration:duration]; });
+        return result;
+    }
     XCUICoordinate *from = [self pixelCoordinate:x1 y:y1];
     XCUICoordinate *to = [self pixelCoordinate:x2 y:y2];
     if (from == nil || to == nil) {
@@ -684,6 +788,11 @@ didStartElement:(NSString *)elementName
 
 - (BOOL)pressHome
 {
+    if (![NSThread isMainThread]) {
+        __block BOOL result = NO;
+        ADTPerformOnMainThread(^{ result = [self pressHome]; });
+        return result;
+    }
     @try {
         [XCUIDevice.sharedDevice pressButton:XCUIDeviceButtonHome];
         return YES;
@@ -752,10 +861,12 @@ didStartElement:(NSString *)elementName
 
 - (NSString *)activeApp
 {
-    if (self.activeBundleID.length > 0) {
-        return self.activeBundleID;
+    if (![NSThread isMainThread]) {
+        __block NSString * result = nil;
+        ADTPerformOnMainThread(^{ result = [self activeApp]; });
+        return result;
     }
-    XCUIApplication *app = [self targetApplication];
+    XCUIApplication *app = [XCUIApplication fb_activeApplication];
     @try {
         return app.bundleID ?: @"";
     } @catch (NSException *exception) {
@@ -769,12 +880,33 @@ didStartElement:(NSString *)elementName
         return NO;
     }
     @try {
-        XCUIApplication *app = self.applicationCache[bundleId];
-        if (app == nil) {
-            app = [[XCUIApplication alloc] initWithBundleIdentifier:bundleId];
-            self.applicationCache[bundleId] = app;
+        __block BOOL launched = NO;
+        ADTPerformOnMainThread(^{
+            XCUIApplication *app = self.applicationCache[bundleId];
+            if (app == nil) {
+                app = [[XCUIApplication alloc] initWithBundleIdentifier:bundleId];
+                self.applicationCache[bundleId] = app;
+            }
+            // Reuse WDA's session launcher so startup follows the same lifecycle
+            // as the normal iOS driver. Direct XCUIApplication launch is
+            // unreliable for a non-AUT app in a long-lived WDA session.
+            FBSession *session = FBSession.activeSession;
+            if (session != nil) {
+                app = [session launchApplicationWithBundleId:bundleId
+                                      shouldWaitForQuiescence:@NO
+                                                    arguments:nil
+                                                  environment:nil];
+                self.applicationCache[bundleId] = app;
+            } else {
+                app.fb_shouldWaitForQuiescence = NO;
+                [app launch];
+            }
+            // Fall back to the system launcher while WDA is attaching.
+            launched = app.running || [FBUnattachedAppLauncher launchAppWithBundleId:bundleId];
+        });
+        if (!launched) {
+            return NO;
         }
-        [app launch];
         self.activeBundleID = bundleId;
         [NSThread sleepForTimeInterval:0.6];
         return YES;
@@ -790,13 +922,18 @@ didStartElement:(NSString *)elementName
         return NO;
     }
     @try {
-        XCUIApplication *app = self.applicationCache[bundleId];
-        if (app == nil) {
-            app = [[XCUIApplication alloc] initWithBundleIdentifier:bundleId];
-            self.applicationCache[bundleId] = app;
-        }
-        [app terminate];
-        return YES;
+        __block BOOL stopped = NO;
+        ADTPerformOnMainThread(^{
+            XCUIApplication *app = self.applicationCache[bundleId];
+            if (app == nil) {
+                app = [[XCUIApplication alloc] initWithBundleIdentifier:bundleId];
+                self.applicationCache[bundleId] = app;
+            }
+            [app terminate];
+            stopped = app.state == XCUIApplicationStateNotRunning;
+        });
+        if (stopped && [self.activeBundleID isEqual:bundleId]) { self.activeBundleID = nil; }
+        return stopped;
     } @catch (NSException *exception) {
         return NO;
     }
@@ -804,6 +941,11 @@ didStartElement:(NSString *)elementName
 
 - (BOOL)typeText:(NSString *)text
 {
+    if (![NSThread isMainThread]) {
+        __block BOOL result = NO;
+        ADTPerformOnMainThread(^{ result = [self typeText:text]; });
+        return result;
+    }
     if (text.length == 0) {
         return YES;
     }
@@ -934,7 +1076,8 @@ didStartElement:(NSString *)elementName
 {
     // runtime.js 传的是文件路径，这里按父目录建（与 AutoJs6 files.ensureDir 语义一致）
     NSString *fullPath = [self resolvePath:path];
-    return [NSFileManager.defaultManager createDirectoryAtPath:fullPath withIntermediateDirectories:YES attributes:nil error:NULL];
+    NSString *directory = [path hasSuffix:@"/"] ? fullPath : fullPath.stringByDeletingLastPathComponent;
+    return [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:NULL];
 }
 
 - (BOOL)fsRemove:(NSString *)path

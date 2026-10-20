@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "2600"
+   LastUpgradeVersion = "2710"
    version = "1.3">
    <BuildAction
       parallelizeBuildables = "YES"
@@ -46,7 +46,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "9D6B02D8FC050BAF7159284F"
             BuildableName = "IntegrationApp_watchOS.app"
-            BlueprintName = "IntegrationApp_watchOS"
             ReferencedContainer = "container:WebDriverAgent.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -63,7 +62,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "9D6B02D8FC050BAF7159284F"
             BuildableName = "IntegrationApp_watchOS.app"
-            BlueprintName = "IntegrationApp_watchOS"
             ReferencedContainer = "container:WebDriverAgent.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

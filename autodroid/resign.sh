@@ -94,7 +94,7 @@ done < <(find "$APP" \( -name "*.framework" -o -name "*.dylib" \) -not -path "$A
 
 while IFS= read -r -d '' item; do
     sign "$item"
-done < <(find "$APP" -name "*.appex" -o -name "*.xctest" -print0 2>/dev/null)
+done < <(find "$APP" \( -name "*.appex" -o -name "*.xctest" \) -print0 2>/dev/null)
 
 sign "$APP"
 
@@ -106,8 +106,10 @@ find "$APP" -name "*.dSYM" -prune -exec rm -rf {} + 2>/dev/null || true
 mkdir -p "$WORK/out/Payload"
 cp -R "$APP" "$WORK/out/Payload/"
 mkdir -p "$(dirname "$OUTPUT")"
+# 先转成绝对路径：zip 会在 $WORK/out 子 shell 里执行，相对路径会解析错
+OUTPUT="$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
 rm -f "$OUTPUT"
-(cd "$WORK/out" && zip -qry "$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")" Payload)
+(cd "$WORK/out" && zip -qry "$OUTPUT" Payload)
 
 echo "==> 完成: $OUTPUT"
 echo "    安装: xcrun devicectl device install app --device <UDID> \"$APP\"，或将 IPA 交给 Apple Configurator / AltStore / Sideloadly"

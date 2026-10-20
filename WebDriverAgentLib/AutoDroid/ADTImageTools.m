@@ -163,7 +163,7 @@ static BOOL ADTBestNCCOffset(const ADTGrayBuffer *shot,
     for (NSInteger y = startY; y <= endY; y++) {
         for (NSInteger x = startX; x <= endX; x++) {
             double sumI = ADTIntegralRectSum(shotSum->sum, stride, x, y, tw, th);
-            double sumI2 = ADTIntegralRectSum(shotSum2->sum, stride, x, y, tw, th);
+            double sumI2 = ADTIntegralRectSum(shotSum2->sum2, stride, x, y, tw, th);
             double varI = sumI2 - sumI * sumI / n;
             if (varI <= 1e-6) {
                 continue;
@@ -229,7 +229,7 @@ static NSArray<NSValue *> *ADTCoarseCandidates(const ADTGrayBuffer *shotC,
     for (NSInteger y = 0; y <= sh - th; y++) {
         for (NSInteger x = 0; x <= sw - tw; x++) {
             double sumI = ADTIntegralRectSum(shotSum->sum, stride, x, y, tw, th);
-            double sumI2 = ADTIntegralRectSum(shotSum2->sum, stride, x, y, tw, th);
+            double sumI2 = ADTIntegralRectSum(shotSum2->sum2, stride, x, y, tw, th);
             double varI = sumI2 - sumI * sumI / n;
             if (varI <= 1e-6) {
                 continue;
@@ -249,11 +249,17 @@ static NSArray<NSValue *> *ADTCoarseCandidates(const ADTGrayBuffer *shotC,
     [all sortUsingComparator:^NSComparisonResult(NSDictionary *lhs, NSDictionary *rhs) {
         return [rhs[@"score"] compare:lhs[@"score"]];
     }];
-    NSInteger limit = MIN((NSInteger)all.count, ADTCandidateCount);
-    for (NSInteger i = 0; i < limit; i++) {
-        NSDictionary *entry = all[i];
-        [candidates addObject:[NSValue valueWithCGPoint:CGPointMake([entry[@"x"] doubleValue], [entry[@"y"] doubleValue])]];
+    for (NSDictionary *entry in all) {
+        CGPoint point = CGPointMake([entry[@"x"] doubleValue], [entry[@"y"] doubleValue]);
+        BOOL nearby = NO;
+        for (NSValue *other in candidates) {
+            if (fabs(other.CGPointValue.x - point.x) < MAX(2, tw / 2)
+                && fabs(other.CGPointValue.y - point.y) < MAX(2, th / 2)) { nearby = YES; break; }
+        }
+        if (nearby) { continue; }
+        [candidates addObject:[NSValue valueWithCGPoint:point]];
         scores[@(candidates.count - 1)] = entry[@"score"];
+        if (candidates.count >= ADTCandidateCount) { break; }
     }
     *outScores = scores;
     return candidates;
@@ -468,10 +474,7 @@ static NSArray<NSValue *> *ADTCoarseCandidates(const ADTGrayBuffer *shotC,
         factor *= 2;
     }
 
-    NSInteger seedX = 0;
-    NSInteger seedY = 0;
-    BOOL hasSeed = NO;
-    double coarseScore = 0.0;
+    NSArray<NSValue *> *seeds = @[];
 
     if (factor > 1) {
         ADTGrayBuffer shotC = {0, 0, NULL};
@@ -482,13 +485,7 @@ static NSArray<NSValue *> *ADTCoarseCandidates(const ADTGrayBuffer *shotC,
             if (ADTBuildIntegral(&shotC, &integral) && ADTBuildIntegral(&shotC, &integral2)) {
                 NSDictionary<NSNumber *, NSNumber *> *scores = nil;
                 NSArray<NSValue *> *candidates = ADTCoarseCandidates(&shotC, &tplC, &integral, &integral2, &scores);
-                if (candidates.count > 0) {
-                    hasSeed = YES;
-                    CGPoint point = candidates.firstObject.CGPointValue;
-                    seedX = (NSInteger)point.x;
-                    seedY = (NSInteger)point.y;
-                    coarseScore = 0.0;
-                }
+                seeds = candidates;
             }
             ADTFreeIntegral(&integral);
             ADTFreeIntegral(&integral2);
@@ -504,9 +501,10 @@ static NSArray<NSValue *> *ADTCoarseCandidates(const ADTGrayBuffer *shotC,
         double bestScore = -2.0;
         NSInteger bestX = -1;
         NSInteger bestY = -1;
-        if (hasSeed) {
-            NSInteger centerX = seedX * factor;
-            NSInteger centerY = seedY * factor;
+        if (seeds.count > 0) {
+          for (NSValue *seed in seeds) {
+            NSInteger centerX = (NSInteger)seed.CGPointValue.x * factor;
+            NSInteger centerY = (NSInteger)seed.CGPointValue.y * factor;
             NSInteger radius = MAX(2 * factor, 4);
             double score = 0.0;
             NSInteger x = 0;
@@ -514,10 +512,13 @@ static NSArray<NSValue *> *ADTCoarseCandidates(const ADTGrayBuffer *shotC,
             if (ADTBestNCCOffset(&shot, &tpl, &shotIntegral, &shotIntegral2,
                                  centerX - radius, centerY - radius, centerX + radius, centerY + radius,
                                  &score, &x, &y)) {
-                bestScore = score;
-                bestX = x;
-                bestY = y;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestX = x;
+                    bestY = y;
+                }
             }
+          }
         } else {
             double score = 0.0;
             NSInteger x = 0;
@@ -538,7 +539,6 @@ static NSArray<NSValue *> *ADTCoarseCandidates(const ADTGrayBuffer *shotC,
                 @"width": @(tpl.width),
                 @"height": @(tpl.height),
                 @"coarse_factor": @(factor),
-                @"coarse_score": @(coarseScore),
             };
         }
     }
@@ -581,9 +581,9 @@ static NSArray<NSValue *> *ADTCoarseCandidates(const ADTGrayBuffer *shotC,
             for (NSInteger x = 0; x + win <= bufA.width; x += win) {
                 double n = (double)(win * win);
                 double sa = ADTIntegralRectSum(sumA.sum, (NSInteger)stride, x, y, win, win);
-                double sa2 = ADTIntegralRectSum(sumA2.sum, (NSInteger)stride, x, y, win, win);
+                double sa2 = ADTIntegralRectSum(sumA2.sum2, (NSInteger)stride, x, y, win, win);
                 double sb = ADTIntegralRectSum(sumB.sum, (NSInteger)stride, x, y, win, win);
-                double sb2 = ADTIntegralRectSum(sumB2.sum, (NSInteger)stride, x, y, win, win);
+                double sb2 = ADTIntegralRectSum(sumB2.sum2, (NSInteger)stride, x, y, win, win);
                 double cross = 0.0;
                 for (NSInteger dy = 0; dy < win; dy++) {
                     const float *rowA = bufA.data + (y + dy) * bufA.width + x;

@@ -31,6 +31,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// 增量读取运行日志
 - (NSArray<NSString *> *)logsSince:(NSInteger)index;
 
+/// Read a completed run's on-device report for UI display / retrying upload.
+- (nullable NSDictionary *)reportForRunId:(NSString *)runId;
+
+- (NSDictionary *)scheduleStatus;
+- (NSDictionary *)replaceSchedules:(NSDictionary *)request;
+- (NSDictionary *)notificationStatus:(BOOL)requestPermission;
+
 @end
 
 NS_ASSUME_NONNULL_END
