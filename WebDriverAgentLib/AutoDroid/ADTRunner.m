@@ -79,7 +79,7 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
                 }
             }
         }
-        UNUserNotificationCenter.currentNotificationCenter.delegate = self;
+        [self configureNotificationCenter];
         _scheduleTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
         dispatch_source_set_timer(_scheduleTimer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, NSEC_PER_SEC / 10);
         __weak typeof(self) weakSelf = self;
@@ -89,10 +89,16 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
     return self;
 }
 
+- (void)configureNotificationCenter
+{
+    UNUserNotificationCenter.currentNotificationCenter.delegate = self;
+}
+
 #pragma mark - 状态与日志
 
 - (NSDictionary *)status
 {
+  @synchronized (self) {
     NSMutableDictionary *status = [NSMutableDictionary dictionary];
     status[@"running"] = @((BOOL)(self.running || self.fetchingSchedule));
     status[@"run_id"] = self.currentRunId ?: [NSNull null];
@@ -103,6 +109,7 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
     status[@"log_count"] = @(self.logs.count);
     [self.logLock unlock];
     return status;
+  }
 }
 
 - (NSArray<NSString *> *)logsSince:(NSInteger)index
@@ -208,6 +215,7 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
     NSDictionary *manifest = bundle[@"manifest"];
     NSString *mainSource = [bundle[@"main_js"] isKindOfClass:NSString.class] ? bundle[@"main_js"] : nil;
     NSDictionary *result = nil;
+    NSNumber *startedAt = @(NSDate.date.timeIntervalSince1970 * 1000);
 
     @try {
         [ADTImageTools resetHandles];
@@ -237,6 +245,7 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
             return weakSelf.stopRequested;
         };
         context.exceptionHandler = ^(JSContext *jsContext, JSValue *exception) {
+            jsContext.exception = exception;
             [weakSelf appendLog:[NSString stringWithFormat:@"[js-error] %@", exception.toString]];
         };
 
@@ -285,11 +294,11 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
         [self appendLog:[NSString stringWithFormat:@"[runner] 开始执行 main.js（kind=%@）", manifest[@"kind"] ?: @"?"]];
         [context evaluateScript:mainSource withSourceURL:[NSURL fileURLWithPath:mainPath]];
 
+        JSValue *exception = context.exception;
         JSValue *resultValue = context[@"__AUTODROID_RESULT__"];
         if (resultValue != nil && !resultValue.isUndefined && !resultValue.isNull) {
             result = [resultValue toObject];
         }
-        JSValue *exception = context.exception;
         if (exception != nil && !exception.isNull && !exception.isUndefined) {
             result = @{@"upload_ok": @NO, @"error": [exception toString] ?: @"未知 JS 异常"};
             [self appendLog:[NSString stringWithFormat:@"[runner] 执行异常: %@", [exception toString]]];
@@ -302,6 +311,32 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
     NSMutableDictionary *summary = [NSMutableDictionary dictionary];
     if ([result isKindOfClass:NSDictionary.class]) {
         [summary addEntriesFromDictionary:result];
+    }
+    if (!summary.count) { summary[@"error"] = @"脚本结束但未生成执行结果"; }
+    if (summary[@"error"] && ![self reportForRunId:runId]) {
+        // Native preparation/JavaScript exceptions can happen before runtime.js
+        // writes a report. Keep a normal failure payload so the client can retry
+        // uploading it instead of losing this run from the platform entirely.
+        summary[@"success"] = @NO;
+        summary[@"upload_ok"] = @NO;
+        NSMutableArray *cases = [NSMutableArray array];
+        for (NSDictionary *entry in manifest[@"cases"]) {
+            [cases addObject:@{@"case_id": entry[@"id"] ?: NSNull.null,
+                @"name": entry[@"name"] ?: @"用例", @"alias": entry[@"alias"] ?: NSNull.null,
+                @"success": @NO, @"steps": @[@{@"order": @0, @"action": @"system", @"status": @"FAIL",
+                    @"error": summary[@"error"], @"error_code": @"E2999_EXECUTION_ERROR"}]}];
+        }
+        NSDictionary *report = @{@"run_id": runId, @"platform": @"ios", @"format_version": @1,
+            @"kind": manifest[@"kind"] ?: @"case", @"scenario_id": manifest[@"scenario_id"] ?: NSNull.null,
+            @"case_id": [manifest[@"kind"] isEqual:@"case"] && cases.count ? (cases.firstObject[@"case_id"] ?: NSNull.null) : NSNull.null,
+            @"device": @{@"serial": request[@"device_serial"] ?: @"", @"brand": @"Apple"},
+            @"notify": request[@"notify"] ?: @YES, @"success": @NO, @"started_at": startedAt,
+            @"finished_at": @(NSDate.date.timeIntervalSince1970 * 1000), @"cases": cases, @"logs": [self logsSince:0]};
+        NSString *directory = [[[self documentsDirectory] stringByAppendingPathComponent:ADTRunnerRunsDirectoryName]
+                              stringByAppendingPathComponent:runId];
+        [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:NULL];
+        NSData *data = [NSJSONSerialization dataWithJSONObject:report options:0 error:NULL];
+        [data writeToFile:[directory stringByAppendingPathComponent:@"report.json"] atomically:YES];
     }
     summary[@"run_id"] = runId;
     summary[@"finished_at"] = @((long long)(NSDate.date.timeIntervalSince1970 * 1000));
@@ -491,7 +526,7 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
                             event[@"finished"] = @YES; event[@"result"] = result; event[@"logs"] = @[failure];
                             if ([task[@"system_notify"] boolValue]) { [self notifyCompletion:result request:task]; }
                             [self returnToClient:task];
-                            if (status == 401) {
+                            if (status == 401 && revision == self.scheduleRevision) {
                                 for (NSMutableDictionary *pending in self.schedules) { pending[@"enabled"] = @NO; [pending removeObjectForKey:@"token"]; }
                             }
                         }
