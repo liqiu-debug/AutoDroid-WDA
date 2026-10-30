@@ -62,6 +62,9 @@ xcodebuild test-without-building \
 ## 已知坑与运维注意
 
 - **证书有效期**：免费 Apple ID 7 天到期需重签重装；付费账号 1 年。自动注册设备会消耗 100 台/年配额。
+  查看当前安装包的到期时间：
+  `security cms -D -i autodroid/out/WebDriverAgentRunner-Runner.app/embedded.mobileprovision | plutil -extract ExpirationDate raw -`；
+  到期前用 `autodroid/resign.sh` 重签同一个包再重装即可，不必重新构建。建议把这条检查加进发布前清单。
 - **设备重启后**可能无法再点图标启动（需重新挂载 Developer Disk Image，连一次 Xcode 即可），这是「无人值守」的最大变量。
 - **内嵌 XCTest 框架**：iOS 17 起因 `testmanagerd` 更名（`com.apple.private…` → `com.apple.dt.testmanagerd.runner`），runner 内若内嵌 XCTest 副本，脱离 xcodebuild 启动会崩溃。WDA 16.x 构建默认不再内嵌（已实测确认），`build_ipa.sh` 仍保留清理逻辑以兼容旧产物。
 - **WDA 没有任何鉴权**：只放在可信局域网，或由平台做一层带鉴权的代理。
@@ -77,11 +80,61 @@ fork 在 WDA 之上增加了 AutoDroid 执行器，让设备自己执行平台�
 | `WebDriverAgentLib/AutoDroid/ADTRunner` | 接收脚本包 → 落盘到 `Documents/autodroid_runs/<run_id>/` → 用 JavaScriptCore 执行 → 回传结果（回传由包内 runtime.js 完成） |
 | `WebDriverAgentLib/AutoDroid/ADTPrimitives` | 原生原语（元素查询复用 WDA 的 `XCUIElement+FBFind`、点击/输入/滑动走 XCTest、截图与坐标按 scale 换算） |
 | `WebDriverAgentLib/AutoDroid/ADTImageTools` | 模板匹配（积分图 + 粗筛/精修 NCC，对齐 PC 侧 TM_CCOEFF_NORMED）、SSIM、OCR（Vision） |
-| `WebDriverAgentLib/Commands/ADTAutoDroidCommands` | `GET /autodroid/status`、`POST /autodroid/run`、`POST /autodroid/stop`、`GET /autodroid/logs` |
+| `WebDriverAgentLib/Commands/ADTAutoDroidCommands` | 注册全部 `/autodroid/*` 路由（见下表），均不要求 WebDriver 会话 |
 
 **适配层不在这里**：AutoJs6 API 兼容层（`adapter.js`）由平台随脚本包下发
 （平台仓库 `backend/autojs_export/adapters/ios_adapter.js`，包内字段 `adapter_js`），
 执行器优先使用包内适配层 —— 这样**改适配层不需要重新签名/安装 WDA**。
+
+### 执行器接口
+
+所有路由都挂在 WDA 的 HTTP 服务上（默认 8100 端口），不需要先建 WebDriver 会话，也没有鉴权：
+
+| 路由 | 作用 |
+|---|---|
+| `GET /autodroid/status` | `{running, run_id, last_result, log_count, version, stop_requested}` |
+| `POST /autodroid/run` | 提交脚本包并立即开始执行，返回 `{accepted, run_id}`；执行中再次提交会被拒绝 |
+| `POST /autodroid/stop` | 置停止标志；脚本在下一个原语边界检查到后中止（`jsSleep` 期间不会被打断） |
+| `GET /autodroid/logs?since=N` | 执行日志 `{lines, next}`；缓冲区上限 6000 行，超出丢最旧 2000 行。iOS App 不用 `since`，每次取完整快照 |
+| `POST /autodroid/report` | `{run_id}` → `{found, report}`：取回落盘的报告，供 App 在 WDA 上报失败后补传 |
+| `GET /autodroid/schedules` | 当前调度状态：任务列表、各任务 `next_run`、最近事件 |
+| `POST /autodroid/schedules` | **整体替换**定时任务（`{items: [...], server, token, username}`），App 每次同步都整包下发 |
+| `GET /autodroid/notifications` | 执行器侧通知权限状态 |
+| `POST /autodroid/notifications` | 申请通知权限（新版 App 统一关闭 WDA 自身通知，由 App 发） |
+
+`POST /autodroid/run` 载荷（`ADTRunner` 实际读取的字段）：
+
+| 字段 | 说明 |
+|---|---|
+| `bundle` | 平台 `GET /app-runs/.../script?platform=ios` 返回的整个 JSON |
+| `run_id` | App 生成的 UUID，贯穿落盘目录名、上报幂等与完成回跳 |
+| `server`、`token` | 供包内 `runtime.js` 回传 `/device-runs/report`；token 只驻留内存 |
+| `notify` | 是否发飞书卡片（透传到报告）；**缺省时执行器兜底报告按 `true` 处理**，App 总是显式传 |
+| `target_bundle_id` | 被自动化 App 的 bundle id；缺省则跟随 `start_app` 动态设置。当前 iOS App 未发送此字段 |
+| `device_serial`、`name` | 写入报告与日志的标识 |
+| `notify_app`、`completion_bundle_id`、`system_notify` | 完成后是否把客户端 App 拉回前台、拉哪个、是否由 WDA 自己发系统通知 |
+
+定时任务项（`items[]`）字段：`id, enabled, rule(once|daily|weekly|interval), hour, minute, weekday, interval, fetch_url, next_run`；
+`fetch_url` 是触发时向平台取脚本的完整地址，配合整包里的 `server/token/username` 使用。
+
+落盘与持久化：
+
+- 每次运行落到 `Documents/autodroid_runs/<run_id>/`（`manifest.json`、`runtime.js`、`adapter.js`、`main.js`、`cases/`、`assets/`，执行完写 `report.json`），
+  **只保留最近 10 次**（`pruneRunsRoot:keep:10`）。
+- 调度状态持久化在 `Documents/autodroid_scheduler.json`（任务、`next_run`、最近 100 条事件），WDA 重启后由 App 重新同步。
+- 完成后若 `notify_app` 为真，执行器会 `activate` `completion_bundle_id` 指定的 App——**目前硬编码只接受 `com.liuzhenyu.autodroid.ios`**（`ADTRunner.m` 的 `returnToClient:`），客户端换 Bundle ID 必须同步改这里。
+- 脚本在 `evaluateScript:` 里同步执行，**没有执行超时**；死循环脚本会让执行器保持 `running` 直到 WDA 重启。
+
+### 单元测试
+
+AutoDroid 新增的原生测试在 `WebDriverAgentTests/UnitTests/`（`ADTRunnerTests.m`、`ADTImageToolsTests.m`），
+是 XCTest 目标，**不在 `npm test`（只跑 TypeScript 单测）也不在任何 GitHub Actions 里**，需要本机跑：
+
+```bash
+xcodebuild -project WebDriverAgent.xcodeproj -scheme WebDriverAgentLib \
+  -destination 'platform=iOS Simulator,id=<模拟器标识>' \
+  -only-testing:UnitTests/ADTRunnerTests -only-testing:UnitTests/ADTImageToolsTests test
+```
 
 ## 真机验证（Phase 0）
 
