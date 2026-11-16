@@ -908,6 +908,8 @@
 		AD6C26991CF2481700F8B5FF /* XCUIDevice+FBHelpers.m in Sources */ = {isa = PBXBuildFile; fileRef = AD6C26971CF2481700F8B5FF /* XCUIDevice+FBHelpers.m */; };
 		AD6C269C1CF2494200F8B5FF /* XCUIApplication+FBHelpers.h in Headers */ = {isa = PBXBuildFile; fileRef = AD6C269A1CF2494200F8B5FF /* XCUIApplication+FBHelpers.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AD6C269D1CF2494200F8B5FF /* XCUIApplication+FBHelpers.m in Sources */ = {isa = PBXBuildFile; fileRef = AD6C269B1CF2494200F8B5FF /* XCUIApplication+FBHelpers.m */; };
+		AD7100000000000000000001 /* ADTImageToolsTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AD7100000000000000000002 /* ADTImageToolsTests.m */; };
+		AD7200000000000000000001 /* ADTRunnerTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AD7200000000000000000002 /* ADTRunnerTests.m */; };
 		AD764F10E2F00090AEB802F2 /* XCUIElement+FBIsVisible.m in Sources */ = {isa = PBXBuildFile; fileRef = EE9AB7481CAEDF0C008C271F /* XCUIElement+FBIsVisible.m */; };
 		AD76723D1D6B7CC000610457 /* XCUIElement+FBTyping.h in Headers */ = {isa = PBXBuildFile; fileRef = AD76723B1D6B7CC000610457 /* XCUIElement+FBTyping.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AD76723E1D6B7CC000610457 /* XCUIElement+FBTyping.m in Sources */ = {isa = PBXBuildFile; fileRef = AD76723C1D6B7CC000610457 /* XCUIElement+FBTyping.m */; };
@@ -1146,8 +1148,6 @@
 		EE18883A1DA661C400307AA8 /* FBMathUtils.h in Headers */ = {isa = PBXBuildFile; fileRef = EE1888381DA661C400307AA8 /* FBMathUtils.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		EE18883B1DA661C400307AA8 /* FBMathUtils.m in Sources */ = {isa = PBXBuildFile; fileRef = EE1888391DA661C400307AA8 /* FBMathUtils.m */; };
 		EE18883D1DA663EB00307AA8 /* FBMathUtilsTests.m in Sources */ = {isa = PBXBuildFile; fileRef = EE18883C1DA663EB00307AA8 /* FBMathUtilsTests.m */; };
-		AD7100000000000000000001 /* ADTImageToolsTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AD7100000000000000000002 /* ADTImageToolsTests.m */; };
-		AD7200000000000000000001 /* ADTRunnerTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AD7200000000000000000002 /* ADTRunnerTests.m */; };
 		EE1E06DA1D1808C2007CF043 /* FBIntegrationTestCase.m in Sources */ = {isa = PBXBuildFile; fileRef = EE1E06D91D1808C2007CF043 /* FBIntegrationTestCase.m */; };
 		EE1E06E71D182E95007CF043 /* FBAlertViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = EE1E06E61D182E95007CF043 /* FBAlertViewController.m */; };
 		EE2202131ECC612200A29571 /* FBIntegrationTestCase.m in Sources */ = {isa = PBXBuildFile; fileRef = EE1E06D91D1808C2007CF043 /* FBIntegrationTestCase.m */; };
@@ -1796,6 +1796,8 @@
 		AD6C26971CF2481700F8B5FF /* XCUIDevice+FBHelpers.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = "XCUIDevice+FBHelpers.m"; sourceTree = "<group>"; };
 		AD6C269A1CF2494200F8B5FF /* XCUIApplication+FBHelpers.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = "XCUIApplication+FBHelpers.h"; sourceTree = "<group>"; };
 		AD6C269B1CF2494200F8B5FF /* XCUIApplication+FBHelpers.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = "XCUIApplication+FBHelpers.m"; sourceTree = "<group>"; };
+		AD7100000000000000000002 /* ADTImageToolsTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ADTImageToolsTests.m; sourceTree = "<group>"; };
+		AD7200000000000000000002 /* ADTRunnerTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ADTRunnerTests.m; sourceTree = "<group>"; };
 		AD76723B1D6B7CC000610457 /* XCUIElement+FBTyping.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = "XCUIElement+FBTyping.h"; sourceTree = "<group>"; };
 		AD76723C1D6B7CC000610457 /* XCUIElement+FBTyping.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = "XCUIElement+FBTyping.m"; sourceTree = "<group>"; };
 		AD76723F1D6B826F00610457 /* FBTypingTest.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = FBTypingTest.m; sourceTree = "<group>"; };
@@ -1859,8 +1861,6 @@
 		EE1888381DA661C400307AA8 /* FBMathUtils.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = FBMathUtils.h; sourceTree = "<group>"; };
 		EE1888391DA661C400307AA8 /* FBMathUtils.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = FBMathUtils.m; sourceTree = "<group>"; };
 		EE18883C1DA663EB00307AA8 /* FBMathUtilsTests.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = FBMathUtilsTests.m; sourceTree = "<group>"; };
-		AD7100000000000000000002 /* ADTImageToolsTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ADTImageToolsTests.m; sourceTree = "<group>"; };
-		AD7200000000000000000002 /* ADTRunnerTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ADTRunnerTests.m; sourceTree = "<group>"; };
 		EE1E06D91D1808C2007CF043 /* FBIntegrationTestCase.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = FBIntegrationTestCase.m; sourceTree = "<group>"; };
 		EE1E06DB1D18090F007CF043 /* FBIntegrationTestCase.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = FBIntegrationTestCase.h; sourceTree = "<group>"; };
 		EE1E06DC1D1811C4007CF043 /* FBTestMacros.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = FBTestMacros.h; sourceTree = "<group>"; };
@@ -5991,6 +5991,7 @@
 			buildSettings = {
 				CLANG_STATIC_ANALYZER_MODE = deep;
 				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEFINES_MODULE = NO;

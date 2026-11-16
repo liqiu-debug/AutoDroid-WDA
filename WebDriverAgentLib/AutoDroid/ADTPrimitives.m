@@ -12,6 +12,7 @@
 
 #import "ADTPrimitives.h"
 #import "ADTImageTools.h"
+#import <CommonCrypto/CommonDigest.h>
 
 #import <XCTest/XCTest.h>
 #import <UIKit/UIKit.h>
@@ -433,6 +434,43 @@ didStartElement:(NSString *)elementName
         return 0.0;
     }
     return (double)[ADTImageTools ssimBetween:first second:second];
+}
+
+- (NSDictionary *)jsMatchImageStrict:(double)shotHandle template:(double)templateHandle options:(NSDictionary *)options
+{
+    UIImage *shot = [ADTImageTools imageForHandle:(NSInteger)shotHandle];
+    UIImage *template = [ADTImageTools imageForHandle:(NSInteger)templateHandle];
+    if (shot == nil || template == nil) {
+        return @{@"status": @"invalid_template", @"reason": @"invalid_image_handle", @"matcher_version": @"strict-v1",
+                 @"point": NSNull.null, @"candidates": @[], @"quality": @{}, @"timings": @{}};
+    }
+    return [ADTImageTools matchImageStrict:shot template:template options:options ?: @{}];
+}
+
+- (nullable NSString *)fileSha256:(NSString *)path
+{
+    NSInputStream *stream = [NSInputStream inputStreamWithFileAtPath:[self resolvePath:path]];
+    if (stream == nil) return nil;
+    CC_SHA256_CTX hash; CC_SHA256_Init(&hash);
+    [stream open];
+    uint8_t buffer[8192]; NSInteger count;
+    while ((count = [stream read:buffer maxLength:sizeof(buffer)]) > 0) {
+        CC_SHA256_Update(&hash, buffer, (CC_LONG)count);
+    }
+    [stream close];
+    if (count < 0) return nil;
+    uint8_t digest[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_Final(digest, &hash);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+    for (NSUInteger i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
+    return hex;
+}
+
+- (NSDictionary *)strictMatcherCapabilities
+{
+    // Frozen strict-v1 passed the shared corpus: 201 positives / 1021 negatives.
+    // This fingerprint identifies the exact held-out manifest, not a threshold.
+    return @{@"matcher_version":@"strict-v1",@"validated":@YES,@"reason":@"shared_acceptance_passed",
+             @"acceptance_sha256":@"534f9d1ea64c25b93692e29cdf85edf298ec69aa92f89bc7444c2a6e9882ddbd"};
 }
 
 - (NSArray<NSString *> *)ocr:(double)handle

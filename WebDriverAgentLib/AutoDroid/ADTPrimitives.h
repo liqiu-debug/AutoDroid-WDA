@@ -32,6 +32,9 @@ JSExportAs(imageToBase64, - (NSString *)jsImageToBase64:(double)handle format:(N
 JSExportAs(imageSave, - (BOOL)jsImageSave:(double)handle path:(NSString *)path overwrite:(BOOL)overwrite);
 - (void)releaseImage:(double)handle;
 JSExportAs(matchTemplate, - (nullable NSDictionary *)jsMatchTemplate:(double)shotHandle template:(double)templateHandle threshold:(double)threshold max:(double)maxCount);
+JSExportAs(matchImageStrict, - (NSDictionary *)jsMatchImageStrict:(double)shotHandle template:(double)templateHandle options:(NSDictionary *)options);
+- (nullable NSString *)fileSha256:(NSString *)path;
+- (NSDictionary *)strictMatcherCapabilities;
 JSExportAs(ssim, - (double)jsSsim:(double)firstHandle second:(double)secondHandle);
 - (NSArray<NSString *> *)ocr:(double)handle;
 

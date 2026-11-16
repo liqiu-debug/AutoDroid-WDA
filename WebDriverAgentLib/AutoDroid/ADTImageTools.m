@@ -11,6 +11,7 @@
 #import "ADTImageTools.h"
 
 #import <Vision/Vision.h>
+#import <Accelerate/Accelerate.h>
 
 static NSMutableDictionary<NSNumber *, UIImage *> *gImageHandles;
 static NSInteger gNextImageHandle = 1;
@@ -263,6 +264,200 @@ static NSArray<NSValue *> *ADTCoarseCandidates(const ADTGrayBuffer *shotC,
     }
     *outScores = scores;
     return candidates;
+}
+
+// Strict-v1 intentionally keeps colour pixels beside the NCC luminance plane.
+// Histogram similarity is insufficient: a red icon swapped with a green icon
+// must fail at the same foreground pixels even if its silhouette is unchanged.
+typedef struct {
+    NSInteger width, height;
+    uint8_t *rgba;
+    ADTGrayBuffer gray;
+} ADTStrictPixels;
+typedef struct {
+    uint8_t *edge, *foreground;
+    NSInteger count;
+    double std, density;
+    BOOL colorful;
+} ADTStrictFeatures;
+
+static double ADTStrictNow(void) { return NSProcessInfo.processInfo.systemUptime; }
+static void ADTStrictFree(ADTStrictPixels *p) {
+    free(p->rgba); free(p->gray.data); p->rgba = NULL; p->gray.data = NULL;
+}
+static BOOL ADTStrictRead(UIImage *image, ADTStrictPixels *p) {
+    CGImageRef cg = image.CGImage;
+    if (cg == NULL) return NO;
+    p->width = CGImageGetWidth(cg); p->height = CGImageGetHeight(cg);
+    if (p->width <= 0 || p->height <= 0 || p->width > 16384 || p->height > 16384) return NO;
+    size_t count = (size_t)p->width * p->height;
+    p->rgba = calloc(count, 4); p->gray = (ADTGrayBuffer){p->width, p->height, malloc(count * sizeof(float))};
+    if (!p->rgba || !p->gray.data) { ADTStrictFree(p); return NO; }
+    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = CGBitmapContextCreate(p->rgba, p->width, p->height, 8, p->width * 4,
+                                            space, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(space);
+    if (ctx == NULL) { ADTStrictFree(p); return NO; }
+    CGContextDrawImage(ctx, CGRectMake(0, 0, p->width, p->height), cg); CGContextRelease(ctx);
+    for (size_t i = 0; i < count; i++) {
+        uint8_t *c = p->rgba + i * 4;
+        // Pixels with alpha were premultiplied by CoreGraphics; compare their
+        // actual composited spatial colour rather than untrusted hidden RGB.
+        p->gray.data[i] = (float)round(.299*c[0] + .587*c[1] + .114*c[2]);
+    }
+    return YES;
+}
+static BOOL ADTStrictCrop(const ADTStrictPixels *source, NSInteger x, NSInteger y, NSInteger w, NSInteger h, ADTStrictPixels *out) {
+    if (w <= 0 || h <= 0 || x < 0 || y < 0 || x+w > source->width || y+h > source->height) return NO;
+    size_t count = (size_t)w*h;
+    out->width = w; out->height = h; out->rgba = malloc(count*4);
+    out->gray = (ADTGrayBuffer){w,h,malloc(count*sizeof(float))};
+    if (!out->rgba || !out->gray.data) { ADTStrictFree(out); return NO; }
+    for (NSInteger row=0;row<h;row++) {
+        memcpy(out->rgba+row*w*4,source->rgba+((y+row)*source->width+x)*4,(size_t)w*4);
+        memcpy(out->gray.data+row*w,source->gray.data+(y+row)*source->width+x,(size_t)w*sizeof(float));
+    }
+    return YES;
+}
+static int ADTStrictDoubleCompare(const void *a,const void *b) {
+    double x=*(const double *)a,y=*(const double *)b; return (x>y)-(x<y);
+}
+static void ADTStrictFreeFeatures(ADTStrictFeatures *f) { free(f->edge);free(f->foreground);f->edge=NULL;f->foreground=NULL; }
+static BOOL ADTStrictExtract(const ADTStrictPixels *p,ADTStrictFeatures *f) {
+    NSInteger w=p->width,h=p->height,n=w*h;
+    double *mag=calloc((size_t)n,sizeof(double));double *ordered=malloc((size_t)n*sizeof(double));
+    f->edge=calloc((size_t)n,1);f->foreground=calloc((size_t)n,1);
+    if(!mag||!ordered||!f->edge||!f->foreground) { free(mag);free(ordered);ADTStrictFreeFeatures(f);return NO; }
+    double sum=0,sum2=0;NSInteger saturated=0;
+    for(NSInteger i=0;i<n;i++) {
+        double v=p->gray.data[i];sum+=v;sum2+=v*v;
+        const uint8_t *c=p->rgba+i*4;if(MAX(c[0],MAX(c[1],c[2]))-MIN(c[0],MIN(c[1],c[2]))>=32)saturated++;
+    }
+    f->std=sqrt(MAX(0,sum2/n-(sum/n)*(sum/n)));f->colorful=(double)saturated/n>=.1;
+    for(NSInteger y=1;y<h-1;y++)for(NSInteger x=1;x<w-1;x++) {
+        NSInteger i=y*w+x;const float *g=p->gray.data;
+        double gx=-g[i-w-1]+g[i-w+1]-2*g[i-1]+2*g[i+1]-g[i+w-1]+g[i+w+1];
+        double gy=-g[i-w-1]-2*g[i-w]-g[i-w+1]+g[i+w-1]+2*g[i+w]+g[i+w+1];mag[i]=hypot(gx,gy);
+    }
+    memcpy(ordered,mag,(size_t)n*sizeof(double));qsort(ordered,(size_t)n,sizeof(double),ADTStrictDoubleCompare);
+    double percentile=(n-1)*.9;NSInteger lower=(NSInteger)floor(percentile),upper=(NSInteger)ceil(percentile);
+    double threshold=MAX(8,(ordered[lower]+(ordered[upper]-ordered[lower])*(percentile-lower))*.25);
+    f->count=0;
+    for(NSInteger y=1;y<h-1;y++)for(NSInteger x=1;x<w-1;x++)if(mag[y*w+x]>=threshold) {
+        f->edge[y*w+x]=1;f->count++;
+        for(NSInteger dy=-1;dy<=1;dy++)for(NSInteger dx=-1;dx<=1;dx++)f->foreground[(y+dy)*w+x+dx]=1;
+    }
+    f->density=(double)f->count/n;free(mag);free(ordered);return YES;
+}
+static double ADTStrictCoverage(const uint8_t *a,const uint8_t *b,NSInteger w,NSInteger h) {
+    NSInteger count=0,found=0;
+    for(NSInteger y=0;y<h;y++)for(NSInteger x=0;x<w;x++)if(a[y*w+x]) {
+        count++;BOOL near=NO;
+        // All eight adjacent pixel centres are within the 1.5px tolerance.
+        for(NSInteger dy=-1;dy<=1;dy++)for(NSInteger dx=-1;dx<=1;dx++)
+            if(x+dx>=0&&x+dx<w&&y+dy>=0&&y+dy<h&&b[(y+dy)*w+x+dx])near=YES;
+        if(near)found++;
+    }
+    return count>0?(double)found/count:0;
+}
+static NSDictionary *ADTStrictVerify(const ADTStrictPixels *t,const ADTStrictPixels *c,double score) {
+    ADTStrictFeatures a={0},b={0};
+    if(!ADTStrictExtract(t,&a)||!ADTStrictExtract(c,&b)) { ADTStrictFreeFeatures(&a);ADTStrictFreeFeatures(&b);return nil; }
+    double recall=ADTStrictCoverage(a.edge,b.edge,t->width,t->height),precision=ADTStrictCoverage(b.edge,a.edge,t->width,t->height);
+    double gray=0,color=0,tiles[16]={0};NSInteger count=0,counts[16]={0};
+    for(NSInteger i=0;i<t->width*t->height;i++)if(a.foreground[i]||b.foreground[i]) {
+        double error=fabs(t->gray.data[i]-c->gray.data[i])/255.;gray+=error;
+        for(NSInteger ch=0;ch<3;ch++)color+=fabs(t->rgba[i*4+ch]-c->rgba[i*4+ch])/(3.*255);
+        NSInteger tile=MIN(3,(i/t->width)*4/t->height)*4+MIN(3,(i%t->width)*4/t->width);tiles[tile]+=error;counts[tile]++;count++;
+    }
+    gray=count?gray/count:1;color=count?color/count:1;double worst=gray;
+    for(NSInteger i=0;i<16;i++)if(counts[i]>=8)worst=MAX(worst,tiles[i]/counts[i]);
+    // Overlapping windows preserve a changed character within a shared label.
+    double localError=0;
+    for(NSInteger y=0;y<t->height;y+=8)for(NSInteger x=0;x<t->width;x+=8) {
+        double sum=0;NSInteger samples=0;
+        for(NSInteger yy=y;yy<MIN(y+16,t->height);yy++)for(NSInteger xx=x;xx<MIN(x+16,t->width);xx++) {
+            NSInteger i=yy*t->width+xx;
+            if(a.foreground[i]||b.foreground[i]) { sum+=fabs(t->gray.data[i]-c->gray.data[i])/255.;samples++; }
+        }
+        if(samples>=8)localError=MAX(localError,sum/samples);
+    }
+    double coverage=MIN(recall,precision);BOOL colorActive=a.colorful||b.colorful;
+    BOOL accepted=a.count>0&&b.count>0&&b.std>.5&&score>=.92&&coverage>=.88&&gray<=.12&&MAX(worst,localError)<=.22&&(!colorActive||color<=.08);
+    NSDictionary *result=@{@"ncc":@(score),@"edge_recall":@(recall),@"edge_precision":@(precision),@"edge_coverage":@(coverage),
+                          @"foreground_error":@(gray),@"tile_error":@(worst),@"local_error":@(localError),@"color_active":@(colorActive),
+                          @"color_error":colorActive?@(color):NSNull.null,@"accepted":@(accepted),@"reason":accepted?@"accepted":@"verification_failed"};
+    ADTStrictFreeFeatures(&a);ADTStrictFreeFeatures(&b);return result;
+}
+static BOOL ADTStrictSameRect(NSArray *a,NSArray *b) {
+    double ax=[a[0] doubleValue],ay=[a[1] doubleValue],aw=[a[2] doubleValue],ah=[a[3] doubleValue];
+    double bx=[b[0] doubleValue],by=[b[1] doubleValue],bw=[b[2] doubleValue],bh=[b[3] doubleValue];
+    double intersection=MAX(0,MIN(ax+aw,bx+bw)-MAX(ax,bx))*MAX(0,MIN(ay+ah,by+bh)-MAX(ay,by));
+    return intersection/MAX(1,aw*ah+bw*bh-intersection)>.35||hypot(ax+aw/2-bx-bw/2,ay+ah/2-by-bh/2)<=.25*MIN(MIN(aw,ah),MIN(bw,bh));
+}
+// Explicit zero-mean normalized cross correlation, equivalent to CCOEFF_NORMED.
+// Precomputed centred template and integral sums keep normalization independent
+// of image brightness. Time is checked on each scan row, including refinement.
+static BOOL ADTStrictNCC(const ADTGrayBuffer *s,const ADTGrayBuffer *t,const ADTIntegralImage *integral,
+                         NSInteger x0,NSInteger y0,NSInteger x1,NSInteger y1,double deadline,
+                         double *best,NSInteger *bx,NSInteger *by,float *response) {
+    NSInteger w=t->width,h=t->height;
+    if(w<=0||h<=0||w>s->width||h>s->height||w>16384||h>16384||!t->data||!s->data)return NO;
+    NSInteger n=w*h,stride=integral->width+1;
+    double mean=0,var=0;for(NSInteger i=0;i<n;i++)mean+=t->data[i];mean/=n;
+    float *centered=calloc((size_t)n,sizeof(float));if(!centered)return NO;
+    for(NSInteger i=0;i<n;i++){centered[i]=t->data[i]-mean;var+=centered[i]*centered[i];}
+    if(var<=1e-6){free(centered);return NO;}
+    *best=-2;*bx=-1;*by=-1;
+    NSInteger startX=MAX(0,x0),startY=MAX(0,y0),endX=MIN(s->width-w,x1),endY=MIN(s->height-h,y1),rw=s->width-w+1;
+    for(NSInteger y=startY;y<=endY;y++) {
+        if(ADTStrictNow()>=deadline){free(centered);return NO;}
+        for(NSInteger x=startX;x<=endX;x++) {
+            double sum=ADTIntegralRectSum(integral->sum,stride,x,y,w,h),sum2=ADTIntegralRectSum(integral->sum2,stride,x,y,w,h);
+            double ivar=sum2-sum*sum/n,score=-2;
+            if(ivar>1e-6) {
+                double cross=0;
+                for(NSInteger ty=0;ty<h;ty++) {
+                    const float *shot=s->data+(y+ty)*s->width+x,*tpl=centered+ty*w;
+                    float rowDot=0;
+                    vDSP_dotpr(shot,1,tpl,1,&rowDot,(vDSP_Length)w);
+                    cross+=(double)rowDot;
+                }
+                score=MAX(-1,MIN(1,cross/sqrt(var*ivar)));
+            }
+            if(response)response[y*rw+x]=(float)score;
+            if(score>*best){*best=score;*bx=x;*by=y;}
+        }
+    }
+    free(centered);return *bx>=0;
+}
+static NSArray<NSDictionary *> *ADTStrictSeeds(const ADTGrayBuffer *s,const ADTGrayBuffer *t,double threshold,NSInteger limit,double deadline,BOOL *overflow) {
+    NSInteger w=s->width-t->width+1,h=s->height-t->height+1;if(w<=0||h<=0)return @[];
+    float *response=malloc((size_t)w*h*sizeof(float));ADTIntegralImage integral={0};
+    if(!response||!ADTBuildIntegral(s,&integral)){free(response);ADTFreeIntegral(&integral);return @[];}
+    double score;NSInteger x,y;
+    if(!ADTStrictNCC(s,t,&integral,0,0,w-1,h-1,deadline,&score,&x,&y,response)) {free(response);ADTFreeIntegral(&integral);return @[];}
+    NSMutableArray *out=[NSMutableArray array];
+    for(NSInteger index=0;limit<=0||index<=limit;index++) {
+        if(ADTStrictNow()>=deadline)break;
+        score=-2;x=-1;y=-1;
+        for(NSInteger i=0;i<w*h;i++)if(response[i]>score){score=response[i];x=i%w;y=i/w;}
+        if(score<threshold||x<0)break;
+        if(limit>0&&index==limit){if(overflow)*overflow=YES;break;}
+        [out addObject:@{@"x":@(x),@"y":@(y),@"score":@(score)}];
+        NSInteger rx=MAX(1,t->width/3),ry=MAX(1,t->height/3);
+        for(NSInteger yy=MAX(0,y-ry);yy<=MIN(h-1,y+ry);yy++)for(NSInteger xx=MAX(0,x-rx);xx<=MIN(w-1,x+rx);xx++)response[yy*w+xx]=-2;
+    }
+    free(response);ADTFreeIntegral(&integral);return out;
+}
+static BOOL ADTStrictNumbers(NSDictionary *options,NSString *key,NSInteger length,double *out) {
+    id value=options[key];if(value==nil||value==NSNull.null)return YES;
+    if(![value isKindOfClass:NSArray.class]||[value count]!=(NSUInteger)length)return NO;
+    for(NSInteger i=0;i<length;i++) {
+        if(![value[i] isKindOfClass:NSNumber.class]||CFGetTypeID((__bridge CFTypeRef)value[i])==CFBooleanGetTypeID())return NO;
+        out[i]=[value[i] doubleValue];if(!isfinite(out[i]))return NO;
+    }
+    return YES;
 }
 
 @implementation ADTImageTools
@@ -547,6 +742,136 @@ static NSArray<NSValue *> *ADTCoarseCandidates(const ADTGrayBuffer *shotC,
     [self freeGrayBuffer:&shot];
     [self freeGrayBuffer:&tpl];
     return result;
+}
+
++ (NSDictionary *)matchImageStrict:(UIImage *)screenshot template:(UIImage *)template options:(NSDictionary *)options {
+    double started=ADTStrictNow(),timeout=5000,epoch=NSDate.date.timeIntervalSince1970*1000;
+    if([options[@"timeout_ms"] isKindOfClass:NSNumber.class])timeout=[options[@"timeout_ms"] doubleValue];
+    timeout=MAX(1,MIN(15000,timeout));
+    if([options[@"deadline_ms"] isKindOfClass:NSNumber.class])timeout=MIN(timeout,[options[@"deadline_ms"] doubleValue]-epoch);
+    double deadline=started+timeout/1000.;
+    NSMutableArray *candidates=[NSMutableArray array];NSMutableDictionary *quality=[NSMutableDictionary dictionary];
+    NSDictionary *(^finish)(NSString *,NSString *,NSDictionary *)=^NSDictionary *(NSString *status,NSString *reason,NSDictionary *best) {
+        NSMutableDictionary *result=[@{@"status":status,@"reason":reason,@"matcher_version":@"strict-v1",@"candidates":candidates,
+                                      @"point":NSNull.null,@"quality":quality,@"timings":@{@"total_ms":@((ADTStrictNow()-started)*1000)}} mutableCopy];
+        if(best){result[@"point"]=best[@"point"];result[@"rect"]=best[@"rect"];}
+        return result;
+    };
+    ADTStrictPixels full={0},shot={0},original={0};ADTStrictFeatures feature={0};
+    @try {
+        if(!isfinite(timeout)||ADTStrictNow()>=deadline)return finish(@"unstable",@"deadline_exceeded",nil);
+        double anchor[2]={.5,.5},source[2]={0,0},region[4]={0,0,1,1};
+        if(!ADTStrictNumbers(options,@"tap_anchor",2,anchor)||anchor[0]<0||anchor[0]>1||anchor[1]<0||anchor[1]>1)
+            return finish(@"invalid_template",@"invalid_tap_anchor",nil);
+        if(!ADTStrictNumbers(options,@"source_size",2,source)||
+           (options[@"source_size"]&&options[@"source_size"]!=NSNull.null&&(source[0]<=0||source[1]<=0||floor(source[0])!=source[0]||floor(source[1])!=source[1])))
+            return finish(@"invalid_template",@"invalid_source_size",nil);
+        if(!ADTStrictNumbers(options,@"search_region",4,region)||!(0<=region[0]&&region[0]<region[2]&&region[2]<=1&&0<=region[1]&&region[1]<region[3]&&region[3]<=1))
+            return finish(@"invalid_template",@"invalid_search_region",nil);
+        if(!ADTStrictRead(screenshot,&full)||!ADTStrictRead(template,&original)||!ADTStrictExtract(&original,&feature))
+            return finish(@"invalid_template",@"invalid_image",nil);
+        NSString *qualityReason=MIN(original.width,original.height)<8?@"template_too_small":feature.std<=.5?@"constant_template":feature.count==0?@"no_foreground":@"ok";
+        NSMutableArray *warnings=[NSMutableArray array];
+        if(feature.std<10)[warnings addObject:@"low_contrast"];
+        if(feature.density<.02)[warnings addObject:@"sparse_features"];
+        if(feature.density>.6)[warnings addObject:@"dense_texture"];
+        [quality addEntriesFromDictionary:@{@"gray_std":@(feature.std),@"edge_count":@(feature.count),@"edge_density":@(feature.density),
+                                           @"colorful":@(feature.colorful),@"size":@[@(original.width),@(original.height)],
+                                           @"valid":@([qualityReason isEqualToString:@"ok"]),@"reason":qualityReason,@"warnings":warnings}];
+        if(![qualityReason isEqualToString:@"ok"])return finish(@"invalid_template",qualityReason,nil);
+        double base=1;
+        if(source[0]>0) {
+            double sx=full.width/source[0],sy=full.height/source[1];
+            if(fabs(sx/sy-1)>.03)return finish(@"unsupported",@"aspect_ratio_changed",nil);
+            base=(sx+sy)/2;
+        }
+        NSInteger left=(NSInteger)floor(region[0]*full.width),top=(NSInteger)floor(region[1]*full.height);
+        NSInteger right=MIN(full.width,(NSInteger)ceil(region[2]*full.width)),bottom=MIN(full.height,(NSInteger)ceil(region[3]*full.height));
+        if(!ADTStrictCrop(&full,left,top,right-left,bottom-top,&shot))return finish(@"not_found",@"empty_search_region",nil);
+        NSArray *scales=@[@1,@.95,@1.05,@.9,@1.1,@.85,@1.15,@.8,@1.2];
+        NSMutableSet *sizes=[NSMutableSet set];NSMutableArray *proposals=[NSMutableArray array];BOOL overflow=NO;
+        double searchStarted=ADTStrictNow();
+        for(NSNumber *scale in scales) {
+            if(ADTStrictNow()>=deadline)return finish(@"unstable",@"deadline_exceeded",nil);
+            NSInteger w=(NSInteger)round(original.width*base*scale.doubleValue),h=(NSInteger)round(original.height*base*scale.doubleValue);
+            NSString *sizeKey=[NSString stringWithFormat:@"%ldx%ld",(long)w,(long)h];
+            if(MIN(w,h)<8||w>shot.width||h>shot.height||[sizes containsObject:sizeKey])continue;
+            [sizes addObject:sizeKey];
+            UIImage *scaled=(w==original.width&&h==original.height)?template:[self scaleImage:template sx:(double)w/original.width sy:(double)h/original.height];
+            ADTStrictPixels tpl={0};ADTGrayBuffer coarseShot={0},coarseTpl={0};ADTIntegralImage fullIntegral={0};
+            @try {
+                if(!scaled||!ADTStrictRead(scaled,&tpl))continue;
+                // Preserve at least eight pixels on the short template side.
+                // In particular, a small icon can never collapse into a 1px template.
+                NSInteger factor=MAX(1,MIN((NSInteger)ceil(MAX(shot.width,shot.height)/320.),MIN(w,h)/8));
+                const ADTGrayBuffer *searchGray=&shot.gray,*templateGray=&tpl.gray;
+                if(factor>1) {
+                    if(!ADTDownsample(&shot.gray,factor,&coarseShot)||!ADTDownsample(&tpl.gray,factor,&coarseTpl))continue;
+                    searchGray=&coarseShot;templateGray=&coarseTpl;
+                }
+                BOOL scaleOverflow=NO;
+                // Coarse peaks are proposals, not verified independent objects.
+                // Enumerate every coarse peak within the deadline; only original
+                // pixel NCC >= .82 can consume the 20-candidate safety limit.
+                NSArray *seeds=ADTStrictSeeds(searchGray,templateGray,factor==1?.82:.45,factor==1?20:0,deadline,factor==1?&scaleOverflow:NULL);
+                if(factor>1&&!ADTBuildIntegral(&shot.gray,&fullIntegral))return finish(@"unsupported",@"allocation_failed",nil);
+                NSMutableArray *scaleProposals=[NSMutableArray array];
+                for(NSDictionary *seed in seeds) {
+                    if(ADTStrictNow()>=deadline)return finish(@"unstable",@"deadline_exceeded",nil);
+                    double score=[seed[@"score"] doubleValue];NSInteger x=[seed[@"x"] integerValue],y=[seed[@"y"] integerValue];
+                    if(factor>1) {
+                        NSInteger radius=factor+1,cx=x*factor,cy=y*factor;
+                        if(!ADTStrictNCC(&shot.gray,&tpl.gray,&fullIntegral,cx-radius,cy-radius,cx+radius,cy+radius,deadline,&score,&x,&y,NULL))continue;
+                    }
+                    if(score<.82)continue;
+                    NSArray *rect=@[@(x+left),@(y+top),@(w),@(h)];BOOL duplicate=NO;
+                    for(NSDictionary *previous in scaleProposals)if(ADTStrictSameRect(previous[@"rect"],rect)){duplicate=YES;break;}
+                    if(duplicate)continue;
+                    [scaleProposals addObject:@{@"rect":rect,@"similarity":@(score),@"image":scaled}];
+                    if(scaleProposals.count>20){scaleOverflow=YES;break;}
+                }
+                overflow=overflow||scaleOverflow;
+                [proposals addObjectsFromArray:scaleProposals];
+            } @finally {
+                ADTStrictFree(&tpl);[self freeGrayBuffer:&coarseShot];[self freeGrayBuffer:&coarseTpl];ADTFreeIntegral(&fullIntegral);
+            }
+        }
+        double searchMS=(ADTStrictNow()-searchStarted)*1000,verifyStarted=ADTStrictNow();NSMutableArray *verified=[NSMutableArray array];
+        for(NSDictionary *p in proposals) {
+            if(ADTStrictNow()>=deadline)return finish(@"unstable",@"deadline_exceeded",nil);
+            NSArray *r=p[@"rect"];NSInteger x=[r[0] integerValue],y=[r[1] integerValue],w=[r[2] integerValue],h=[r[3] integerValue];
+            ADTStrictPixels tpl={0},crop={0};
+            @try {
+                if(!ADTStrictRead(p[@"image"],&tpl)||!ADTStrictCrop(&full,x,y,w,h,&crop))return finish(@"unsupported",@"allocation_failed",nil);
+                NSDictionary *metrics=ADTStrictVerify(&tpl,&crop,[p[@"similarity"] doubleValue]);
+                if(!metrics)return finish(@"unsupported",@"allocation_failed",nil);
+                [verified addObject:@{@"rect":r,@"point":@[@(MIN(full.width-1,x+MIN(w-1,anchor[0]*w))),@(MIN(full.height-1,y+MIN(h-1,anchor[1]*h)))],
+                                      @"similarity":p[@"similarity"],@"metrics":metrics,@"accepted":metrics[@"accepted"]}];
+            } @finally { ADTStrictFree(&tpl);ADTStrictFree(&crop); }
+        }
+        [verified sortUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b) {
+            NSComparisonResult accepted=[b[@"accepted"] compare:a[@"accepted"]];return accepted!=NSOrderedSame?accepted:[b[@"similarity"] compare:a[@"similarity"]];
+        }];
+        for(NSDictionary *candidate in verified) {
+            BOOL duplicate=NO;for(NSDictionary *other in candidates)if(ADTStrictSameRect(candidate[@"rect"],other[@"rect"])){duplicate=YES;break;}
+            if(!duplicate)[candidates addObject:candidate];
+            if(candidates.count>64){overflow=YES;[candidates removeLastObject];break;}
+        }
+        NSMutableArray *accepted=[NSMutableArray array];for(NSDictionary *candidate in candidates)if([candidate[@"accepted"] boolValue])[accepted addObject:candidate];
+        NSDictionary *best=accepted.firstObject;NSString *status=@"not_found",*reason=@"no_verified_candidate";
+        if(overflow){status=@"ambiguous";reason=@"candidate_overflow";}
+        else if(accepted.count>1){status=@"ambiguous";reason=@"multiple_verified_targets";}
+        else if(best) {
+            status=@"matched";reason=@"unique_verified_target";
+            for(NSDictionary *other in candidates)if(other!=best&&[other[@"similarity"] doubleValue]>=.90&&
+                [best[@"similarity"] doubleValue]-[other[@"similarity"] doubleValue]<.03&&[other[@"metrics"][@"edge_coverage"] doubleValue]>=.80&&
+                [other[@"metrics"][@"foreground_error"] doubleValue]<=.16){status=@"ambiguous";reason=@"insufficient_margin";break;}
+        }
+        if(ADTStrictNow()>=deadline)return finish(@"unstable",@"deadline_exceeded",nil);
+        NSMutableDictionary *result=[finish(status,reason,[status isEqualToString:@"matched"]?best:nil) mutableCopy];
+        result[@"timings"]=@{@"total_ms":@((ADTStrictNow()-started)*1000),@"search_ms":@(searchMS),@"verification_ms":@((ADTStrictNow()-verifyStarted)*1000)};
+        return result;
+    } @finally { ADTStrictFree(&full);ADTStrictFree(&shot);ADTStrictFree(&original);ADTStrictFreeFeatures(&feature); }
 }
 
 #pragma mark - SSIM

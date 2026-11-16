@@ -38,6 +38,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 返回 @{@"similarity": double, @"x": double, @"y": double, @"width": double, @"height": double} 或 nil
 + (nullable NSDictionary *)matchTemplate:(UIImage *)screenshot template:(UIImage *)template threshold:(CGFloat)threshold;
 
+/// Strict click locator. All rectangles and points remain original screenshot pixels.
+/// NCC proposals are checked independently for foreground, contour and spatial colour.
++ (NSDictionary *)matchImageStrict:(UIImage *)screenshot template:(UIImage *)template options:(NSDictionary *)options;
+
 /// 结构相似度（灰度，8x8 窗口）
 + (CGFloat)ssimBetween:(UIImage *)a second:(UIImage *)b;
 
