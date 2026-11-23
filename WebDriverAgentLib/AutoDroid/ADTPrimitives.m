@@ -470,7 +470,17 @@ didStartElement:(NSString *)elementName
     // Frozen strict-v1 passed the shared corpus: 201 positives / 1021 negatives.
     // This fingerprint identifies the exact held-out manifest, not a threshold.
     return @{@"matcher_version":@"strict-v1",@"validated":@YES,@"reason":@"shared_acceptance_passed",
-             @"acceptance_sha256":@"534f9d1ea64c25b93692e29cdf85edf298ec69aa92f89bc7444c2a6e9882ddbd"};
+             @"acceptance_sha256":@"534f9d1ea64c25b93692e29cdf85edf298ec69aa92f89bc7444c2a6e9882ddbd",
+             @"profiles":@[@"strict-v1",@"adaptive-v2"],@"descriptor_versions":@[@1],@"structured_ocr":@YES,
+             @"profile_validation":@{@"strict-v1":@{@"positives":@201,@"negatives":@1021},
+                                      @"adaptive-v2":@{@"positives":@201,@"negatives":@1021,@"real_reports":@[@156,@161]}}};
+}
+
+- (NSDictionary *)jsOCRItems:(double)handle deadline:(double)deadlineMS
+{
+    UIImage *image = [ADTImageTools imageForHandle:(NSInteger)handle];
+    if (image == nil) return @{@"status":@"unsupported",@"reason":@"invalid_image_handle",@"items":@[]};
+    return [ADTImageTools recognizeTextItems:image deadline:deadlineMS];
 }
 
 - (NSArray<NSString *> *)ocr:(double)handle

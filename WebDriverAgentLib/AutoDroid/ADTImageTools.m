@@ -12,6 +12,7 @@
 
 #import <Vision/Vision.h>
 #import <Accelerate/Accelerate.h>
+#import <CommonCrypto/CommonDigest.h>
 
 static NSMutableDictionary<NSNumber *, UIImage *> *gImageHandles;
 static NSInteger gNextImageHandle = 1;
@@ -339,9 +340,10 @@ static BOOL ADTStrictExtract(const ADTStrictPixels *p,ADTStrictFeatures *f) {
         double gx=-g[i-w-1]+g[i-w+1]-2*g[i-1]+2*g[i+1]-g[i+w-1]+g[i+w+1];
         double gy=-g[i-w-1]-2*g[i-w]-g[i-w+1]+g[i+w-1]+2*g[i+w]+g[i+w+1];mag[i]=hypot(gx,gy);
     }
-    memcpy(ordered,mag,(size_t)n*sizeof(double));qsort(ordered,(size_t)n,sizeof(double),ADTStrictDoubleCompare);
-    double percentile=(n-1)*.9;NSInteger lower=(NSInteger)floor(percentile),upper=(NSInteger)ceil(percentile);
-    double threshold=MAX(8,(ordered[lower]+(ordered[upper]-ordered[lower])*(percentile-lower))*.25);
+    NSInteger signals=0;for(NSInteger i=0;i<n;i++)if(mag[i]>=8)ordered[signals++]=mag[i];
+    qsort(ordered,(size_t)signals,sizeof(double),ADTStrictDoubleCompare);
+    double threshold=8;
+    if(signals){double percentile=(signals-1)*.9;NSInteger lower=(NSInteger)floor(percentile),upper=(NSInteger)ceil(percentile);threshold=MAX(8,(ordered[lower]+(ordered[upper]-ordered[lower])*(percentile-lower))*.25);}
     f->count=0;
     for(NSInteger y=1;y<h-1;y++)for(NSInteger x=1;x<w-1;x++)if(mag[y*w+x]>=threshold) {
         f->edge[y*w+x]=1;f->count++;
@@ -458,6 +460,267 @@ static BOOL ADTStrictNumbers(NSDictionary *options,NSString *key,NSInteger lengt
         out[i]=[value[i] doubleValue];if(!isfinite(out[i]))return NO;
     }
     return YES;
+}
+
+static NSString *ADTAdaptiveSHA(NSData *data) {
+    unsigned char bytes[CC_SHA256_DIGEST_LENGTH];CC_SHA256(data.bytes,(CC_LONG)data.length,bytes);
+    NSMutableString *hex=[NSMutableString string];for(NSUInteger i=0;i<sizeof(bytes);i++)[hex appendFormat:@"%02x",bytes[i]];
+    return hex;
+}
+static BOOL ADTAdaptiveNumber(id value) {return [value isKindOfClass:NSNumber.class]&&CFGetTypeID((__bridge CFTypeRef)value)!=CFBooleanGetTypeID()&&isfinite([value doubleValue]);}
+static NSString *ADTAdaptiveText(NSString *text) {
+    NSArray *parts=[[text precomposedStringWithCanonicalMapping] componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return [[parts filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSString *item,NSDictionary *bindings){return item.length>0;}]] componentsJoinedByString:@" "];
+}
+static BOOL ADTAdaptiveResize(const ADTStrictPixels *input,NSInteger width,NSInteger height,ADTStrictPixels *out) {
+    if(width<1||height<1||width>16384||height>16384)return NO;
+    out->width=width;out->height=height;size_t count=(size_t)width*height;
+    out->rgba=malloc(count*4);out->gray=(ADTGrayBuffer){width,height,malloc(count*sizeof(float))};
+    if(!out->rgba||!out->gray.data){ADTStrictFree(out);return NO;}
+    for(NSInteger y=0;y<height;y++) {
+        double fy=MAX(0,MIN(input->height-1,(y+.5)*input->height/height-.5));NSInteger y0=floor(fy),y1=MIN(input->height-1,y0+1);fy-=y0;
+        for(NSInteger x=0;x<width;x++) {
+            double fx=MAX(0,MIN(input->width-1,(x+.5)*input->width/width-.5));NSInteger x0=floor(fx),x1=MIN(input->width-1,x0+1);fx-=x0;
+            uint8_t *pixel=out->rgba+(y*width+x)*4;
+            for(NSInteger ch=0;ch<4;ch++) {
+                double top=input->rgba[(y0*input->width+x0)*4+ch]*(1-fx)+input->rgba[(y0*input->width+x1)*4+ch]*fx;
+                double bottom=input->rgba[(y1*input->width+x0)*4+ch]*(1-fx)+input->rgba[(y1*input->width+x1)*4+ch]*fx;
+                pixel[ch]=(uint8_t)floor(top*(1-fy)+bottom*fy+.5);
+            }
+            out->gray.data[y*width+x]=(float)floor(.299*pixel[0]+.587*pixel[1]+.114*pixel[2]+.5);
+        }
+    }
+    return YES;
+}
+static UIImage *ADTAdaptiveImage(const ADTStrictPixels *pixels) {
+    NSData *data=[NSData dataWithBytes:pixels->rgba length:(NSUInteger)(pixels->width*pixels->height*4)];
+    CGDataProviderRef provider=CGDataProviderCreateWithCFData((__bridge CFDataRef)data);
+    CGColorSpaceRef space=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGImageRef image=CGImageCreate(pixels->width,pixels->height,8,32,pixels->width*4,space,kCGImageAlphaPremultipliedLast|kCGBitmapByteOrder32Big,provider,NULL,NO,kCGRenderingIntentDefault);
+    UIImage *result=image?[UIImage imageWithCGImage:image]:nil;
+    if(image)CGImageRelease(image);CGColorSpaceRelease(space);CGDataProviderRelease(provider);return result;
+}
+static NSArray *ADTAdaptiveRect(CGRect rect) {return @[@(rect.origin.x),@(rect.origin.y),@(rect.size.width),@(rect.size.height)];}
+static CGRect ADTAdaptiveCGRect(NSArray *r) {return CGRectMake([r[0] doubleValue],[r[1] doubleValue],[r[2] doubleValue],[r[3] doubleValue]);}
+static BOOL ADTAdaptiveSameCandidate(NSDictionary *a,NSDictionary *b) {
+    if(!ADTStrictSameRect(a[@"rect"],b[@"rect"]))return NO;
+    if([a[@"branch"] isEqual:@"composed"]&&[b[@"branch"] isEqual:@"composed"]) {
+        NSDictionary *left=a[@"region_matches"],*right=b[@"region_matches"];
+        if(left.count!=right.count)return NO;
+        for(NSString *key in left)if(!right[key]||!ADTStrictSameRect(left[key][@"rect"],right[key][@"rect"]))return NO;
+    }
+    return YES;
+}
+
+@interface ADTAdaptiveLayer : NSObject {
+@public
+    ADTGrayBuffer gray;
+    ADTIntegralImage integral;
+    float *fftReal,*fftImag;
+    FFTSetup setup;
+    vDSP_Length logW,logH;
+    NSInteger fftWidth,fftHeight;
+    BOOL ownsGray;
+}
+- (instancetype)initWithPixels:(const ADTStrictPixels *)pixels factor:(NSInteger)factor;
+- (BOOL)prepareFFT;
+@end
+@implementation ADTAdaptiveLayer
+- (instancetype)initWithPixels:(const ADTStrictPixels *)pixels factor:(NSInteger)factor {
+    self=[super init];if(!self)return nil;
+    ownsGray=factor>1;if(ownsGray){if(!ADTDownsample(&pixels->gray,factor,&gray))return nil;}else gray=pixels->gray;
+    if(!ADTBuildIntegral(&gray,&integral))return nil;return self;
+}
+- (BOOL)prepareFFT {
+    if(fftReal&&fftImag)return YES;
+    while((1UL<<logW)<(NSUInteger)gray.width)logW++;while((1UL<<logH)<(NSUInteger)gray.height)logH++;
+    fftWidth=1UL<<logW;fftHeight=1UL<<logH;size_t count=(size_t)fftWidth*fftHeight;
+    fftReal=calloc(count,sizeof(float));fftImag=calloc(count,sizeof(float));setup=vDSP_create_fftsetup(MAX(logW,logH),kFFTRadix2);
+    if(!fftReal||!fftImag||!setup)return NO;
+    for(NSInteger y=0;y<gray.height;y++)memcpy(fftReal+y*fftWidth,gray.data+y*gray.width,gray.width*sizeof(float));
+    DSPSplitComplex frequency={fftReal,fftImag};vDSP_fft2d_zip(setup,&frequency,1,fftWidth,logW,logH,FFT_FORWARD);return YES;
+}
+- (void)dealloc {if(ownsGray)free(gray.data);ADTFreeIntegral(&integral);free(fftReal);free(fftImag);if(setup)vDSP_destroy_fftsetup(setup);}
+@end
+
+// Accelerate's complex FFT supplies proposal correlation without a quadratic
+// pixel-by-pixel scan. Only strict original-resolution NCC can accept a result.
+static NSArray *ADTAdaptiveSeeds(ADTAdaptiveLayer *layer,const ADTGrayBuffer *tpl,double threshold,double deadline,BOOL *overflow) {
+    const ADTGrayBuffer *shot=&layer->gray;
+    NSInteger rw=shot->width-tpl->width+1,rh=shot->height-tpl->height+1;if(rw<1||rh<1)return @[];
+    vDSP_Length logW=0,logH=0;while((1UL<<logW)<(NSUInteger)shot->width)logW++;while((1UL<<logH)<(NSUInteger)shot->height)logH++;
+    NSInteger width=1UL<<logW,height=1UL<<logH;size_t count=(size_t)width*height;
+    BOOL spatial=tpl->width*tpl->height<=256;
+    float *ar=spatial?NULL:calloc(count,sizeof(float)),*ai=spatial?NULL:calloc(count,sizeof(float)),*br=spatial?NULL:calloc(count,sizeof(float)),*bi=spatial?NULL:calloc(count,sizeof(float)),*response=malloc((size_t)rw*rh*sizeof(float)),*denominators=malloc((size_t)rw*rh*sizeof(float));
+    FFTSetup setup=spatial?NULL:([layer prepareFFT]?vDSP_create_fftsetup(MAX(logW,logH),kFFTRadix2):NULL);ADTIntegralImage integral=layer->integral;NSMutableArray *out=[NSMutableArray array];
+    @try {
+        if(!response||!denominators||(!spatial&&(!ar||!ai||!br||!bi||!setup)))return nil;
+        double mean=0,var=0;NSInteger n=tpl->width*tpl->height;for(NSInteger i=0;i<n;i++)mean+=tpl->data[i];mean/=n;
+        for(NSInteger i=0;i<n;i++){double value=tpl->data[i]-mean;var+=value*value;}
+        if(var<=1e-6)return @[];
+        if(spatial) {
+            float *centered=malloc((size_t)n*sizeof(float)),*row=malloc((size_t)rw*sizeof(float));if(!centered||!row){free(centered);free(row);return nil;}
+            for(NSInteger i=0;i<n;i++)centered[i]=tpl->data[i]-mean;memset(response,0,(size_t)rw*rh*sizeof(float));
+            for(NSInteger y=0;y<rh;y++) {
+                if(ADTStrictNow()>=deadline){free(centered);free(row);return nil;}
+                for(NSInteger ty=0;ty<tpl->height;ty++){vDSP_conv(shot->data+(y+ty)*shot->width,1,centered+ty*tpl->width,1,row,1,rw,tpl->width);vDSP_vadd(response+y*rw,1,row,1,response+y*rw,1,rw);}
+            }
+            free(centered);free(row);
+        } else {
+            for(NSInteger y=0;y<tpl->height;y++)for(NSInteger x=0;x<tpl->width;x++)br[y*width+x]=tpl->data[y*tpl->width+x]-mean;
+            DSPSplitComplex a={ar,ai},b={br,bi};vDSP_fft2d_zip(setup,&b,1,width,logW,logH,FFT_FORWARD);
+            for(size_t i=0;i<count;i++){double real=layer->fftReal[i]*br[i]+layer->fftImag[i]*bi[i],imag=layer->fftImag[i]*br[i]-layer->fftReal[i]*bi[i];ar[i]=real;ai[i]=imag;}
+            vDSP_fft2d_zip(setup,&a,1,width,logW,logH,FFT_INVERSE);
+        }
+        double norm=spatial?1.:1./count;NSInteger stride=shot->width+1;
+        for(NSInteger y=0;y<rh;y++) {
+            if(ADTStrictNow()>=deadline)return nil;
+            for(NSInteger x=0;x<rw;x++){double sum=ADTIntegralRectSum(integral.sum,stride,x,y,tpl->width,tpl->height),sum2=ADTIntegralRectSum(integral.sum2,stride,x,y,tpl->width,tpl->height),variance=sum2-sum*sum/n;double cross=spatial?response[y*rw+x]:ar[y*width+x]*norm;response[y*rw+x]=variance>1e-6?cross:-2;denominators[y*rw+x]=variance>1e-6?var*variance:1;}
+        }
+        int values=(int)(rw*rh);vvsqrtf(denominators,denominators,&values);vDSP_vdiv(denominators,1,response,1,response,1,values);float low=-1,high=1;vDSP_vclip(response,1,&low,&high,response,1,values);
+        for(NSInteger index=0;index<=64;index++) {
+            if(ADTStrictNow()>=deadline)return nil;float maximum=-2;vDSP_Length offset=0;vDSP_maxvi(response,1,&maximum,&offset,rw*rh);double score=maximum;NSInteger bx=offset%rw,by=offset/rw;
+            if(bx<0||score<threshold)break;if(index==64){*overflow=YES;break;}
+            [out addObject:@{@"x":@(bx),@"y":@(by),@"score":@(score)}];NSInteger rx=MAX(1,tpl->width/3),ry=MAX(1,tpl->height/3);
+            for(NSInteger y=MAX(0,by-ry);y<=MIN(rh-1,by+ry);y++)for(NSInteger x=MAX(0,bx-rx);x<=MIN(rw-1,bx+rx);x++)response[y*rw+x]=-2;
+        }
+        return out;
+    } @finally {free(ar);free(ai);free(br);free(bi);free(response);free(denominators);if(setup)vDSP_destroy_fftsetup(setup);}
+}
+
+// Pixel identity is verified only at original resolution. Pyramid scores are
+// recall evidence; they never become an accepted candidate on their own.
+static NSDictionary *ADTAdaptiveVisual(const ADTStrictPixels *screen,const ADTStrictPixels *original,double deadline,NSMutableDictionary *layers) {
+    double started=ADTStrictNow();
+    NSMutableArray *objects=[NSMutableArray array];NSMutableSet *sizes=[NSMutableSet set];BOOL overflow=NO;
+    double minimum=8./MIN(original->width,original->height),maximum=MIN((double)screen->width/original->width,(double)screen->height/original->height);
+    if(maximum<minimum)return @{@"status":@"ok",@"candidates":@[]};
+    NSMutableArray *scales=[NSMutableArray arrayWithArray:@[@1,@.95,@1.05,@.9,@1.1,@.85,@1.15,@.8,@1.2]];
+    for(double scale=1.12;scale<=maximum*1.001;scale*=1.12)[scales addObject:@(scale)];
+    for(double scale=1/1.12;scale>=minimum*.999;scale/=1.12)[scales addObject:@(scale)];
+    [scales addObject:@(minimum)];[scales addObject:@(maximum)];
+    [scales sortUsingComparator:^NSComparisonResult(NSNumber *a,NSNumber *b){double x=fabs(log(a.doubleValue)),y=fabs(log(b.doubleValue));return x<y?NSOrderedAscending:x>y?NSOrderedDescending:NSOrderedSame;}];
+    for(NSNumber *number in scales) {
+        if(ADTStrictNow()>=deadline)return @{@"status":@"unsupported",@"reason":@"deadline_exceeded",@"candidates":@[]};
+        NSInteger w=floor(original->width*number.doubleValue+.5),h=floor(original->height*number.doubleValue+.5);
+        NSString *key=[NSString stringWithFormat:@"%ld:%ld",(long)w,(long)h];
+        if(MIN(w,h)<8||w>screen->width||h>screen->height||[sizes containsObject:key])continue;[sizes addObject:key];
+        ADTStrictPixels scaled={0};ADTGrayBuffer tplSmall={0};
+        @try {
+            if(!ADTAdaptiveResize(original,w,h,&scaled))return @{@"status":@"unsupported",@"reason":@"allocation_failed",@"candidates":@[]};
+            NSInteger factor=MAX(1,MIN((NSInteger)ceil(MAX(screen->width,screen->height)/960.),MIN(w,h)/32));
+            ADTAdaptiveLayer *layer=layers[@(factor)];if(!layer){layer=[[ADTAdaptiveLayer alloc] initWithPixels:screen factor:factor];if(!layer)return @{@"status":@"unsupported",@"reason":@"allocation_failed",@"candidates":@[]};layers[@(factor)]=layer;}
+            const ADTGrayBuffer *tpl=&scaled.gray;
+            if(factor>1){if(!ADTDownsample(&scaled.gray,factor,&tplSmall))return @{@"status":@"unsupported",@"reason":@"allocation_failed",@"candidates":@[]};tpl=&tplSmall;}
+            BOOL seedOverflow=NO;
+            NSArray *seeds=ADTAdaptiveSeeds(layer,tpl,factor==1?.82:.65,deadline,&seedOverflow);
+            if(!seeds)return @{@"status":@"unsupported",@"reason":ADTStrictNow()>=deadline?@"deadline_exceeded":@"allocation_failed",@"candidates":@[]};
+            if(seedOverflow)overflow=YES;
+            for(NSDictionary *seed in seeds) {
+                NSArray *rect=@[@([seed[@"x"] integerValue]*factor),@([seed[@"y"] integerValue]*factor),@(w),@(h)];
+                NSMutableDictionary *object=nil;
+                for(NSMutableDictionary *other in objects)if(ADTStrictSameRect(rect,other[@"rect"])){object=other;break;}
+                NSDictionary *entry=@{@"rect":rect,@"similarity":seed[@"score"],@"factor":@(factor)};
+                if(!object){object=[@{@"rect":rect,@"seeds":[NSMutableArray array]} mutableCopy];[objects addObject:object];}
+                [object[@"seeds"] addObject:entry];
+                if(objects.count>64){overflow=YES;break;}
+            }
+            if(overflow)break;
+        } @finally {ADTStrictFree(&scaled);[ADTImageTools freeGrayBuffer:&tplSmall];}
+    }
+    if(ADTStrictNow()>=deadline)return @{@"status":@"unsupported",@"reason":@"deadline_exceeded",@"candidates":@[]};
+    if(overflow)return @{@"status":@"unsupported",@"reason":@"candidate_overflow",@"candidates":@[]};
+    double searchMS=(ADTStrictNow()-started)*1000;NSMutableArray *verified=[NSMutableArray array];ADTIntegralImage fullIntegral={0};
+    if(!ADTBuildIntegral(&screen->gray,&fullIntegral))return @{@"status":@"unsupported",@"reason":@"allocation_failed",@"candidates":@[]};
+    @try {
+        for(NSDictionary *object in objects) {
+            NSArray *ranked=[object[@"seeds"] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){return [b[@"similarity"] compare:a[@"similarity"]];}];
+            NSMutableArray *dimensionScores=[NSMutableArray array];NSMutableSet *tested=[NSMutableSet set];
+            // Every integer width near the two strongest pyramid hypotheses is
+            // evaluated in a local pyramid. Exact original-pixel NCC follows.
+            for(NSDictionary *seed in [ranked subarrayWithRange:NSMakeRange(0,MIN((NSUInteger)1,ranked.count))]) {
+                NSArray *r=seed[@"rect"];double centerX=[r[0] doubleValue]+[r[2] doubleValue]/2,centerY=[r[1] doubleValue]+[r[3] doubleValue]/2;
+                NSInteger baseW=[r[2] integerValue],baseH=[r[3] integerValue],factor=MAX(1,MIN(baseW,baseH)/48);
+                ADTGrayBuffer shotSmall={0};ADTIntegralImage smallIntegral={0};
+                @try {
+                    const ADTGrayBuffer *shot=&screen->gray;
+                    if(factor>1){if(!ADTDownsample(&screen->gray,factor,&shotSmall))return @{@"status":@"unsupported",@"reason":@"allocation_failed",@"candidates":@[]};shot=&shotSmall;}
+                    if(!ADTBuildIntegral(shot,&smallIntegral))return @{@"status":@"unsupported",@"reason":@"allocation_failed",@"candidates":@[]};
+                    NSInteger lower=MAX(8,(NSInteger)floor(baseW/1.065)),upper=MIN(screen->width,(NSInteger)ceil(baseW*1.065));
+                    for(NSInteger w=lower;w<=upper;w++) {
+                        if(ADTStrictNow()>=deadline)return @{@"status":@"unsupported",@"reason":@"deadline_exceeded",@"candidates":@[]};
+                        NSInteger h=floor((double)original->height*w/original->width+.5);
+                        NSString *key=[NSString stringWithFormat:@"%ld:%ld",(long)w,(long)h];
+                        if([tested containsObject:key]||MIN(w,h)<8||h>screen->height)continue;[tested addObject:key];
+                        ADTStrictPixels resized={0};ADTGrayBuffer small={0};
+                        @try {
+                            if(!ADTAdaptiveResize(original,w,h,&resized))return @{@"status":@"unsupported",@"reason":@"allocation_failed",@"candidates":@[]};
+                            const ADTGrayBuffer *tpl=&resized.gray;
+                            if(factor>1){if(!ADTDownsample(&resized.gray,factor,&small))return @{@"status":@"unsupported",@"reason":@"allocation_failed",@"candidates":@[]};tpl=&small;}
+                            NSInteger cx=floor((centerX-w/2.)/factor+.5),cy=floor((centerY-h/2.)/factor+.5),radius=MAX(2,[seed[@"factor"] integerValue]/factor+1),x=-1,y=-1;double score=-2;
+                            if(ADTStrictNCC(shot,tpl,&smallIntegral,cx-radius,cy-radius,cx+radius,cy+radius,deadline,&score,&x,&y,NULL))
+                                [dimensionScores addObject:@{@"rect":@[@(x*factor),@(y*factor),@(w),@(h)],@"similarity":@(score),@"factor":@(factor)}];
+                        } @finally {ADTStrictFree(&resized);[ADTImageTools freeGrayBuffer:&small];}
+                    }
+                } @finally {[ADTImageTools freeGrayBuffer:&shotSmall];ADTFreeIntegral(&smallIntegral);}
+            }
+            [dimensionScores sortUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){return [b[@"similarity"] compare:a[@"similarity"]];}];
+            if(!dimensionScores.count||[dimensionScores.firstObject[@"similarity"] doubleValue]<.82)continue;
+            NSMutableDictionary *best=nil;NSMutableSet *originalSizes=[NSMutableSet set];
+            for(NSDictionary *entry in [dimensionScores subarrayWithRange:NSMakeRange(0,MIN((NSUInteger)3,dimensionScores.count))]) {
+                NSArray *r=entry[@"rect"];NSInteger baseW=[r[2] integerValue],baseH=[r[3] integerValue];
+                NSArray *offsets=@[@0,@(-1),@1];
+                for(NSNumber *widthOffset in offsets)for(NSNumber *heightOffset in offsets) {
+                    if([best[@"accepted"] boolValue])continue;
+                    NSInteger dw=widthOffset.integerValue,dh=heightOffset.integerValue;
+                    if(ADTStrictNow()>=deadline)return @{@"status":@"unsupported",@"reason":@"deadline_exceeded",@"candidates":verified};
+                    NSInteger w=baseW+dw,h=baseH+dh;NSString *key=[NSString stringWithFormat:@"%ld:%ld",(long)w,(long)h];
+                    if([originalSizes containsObject:key]||MIN(w,h)<8||w>screen->width||h>screen->height)continue;[originalSizes addObject:key];
+                    ADTStrictPixels resized={0},crop={0};
+                    @try {
+                        if(!ADTAdaptiveResize(original,w,h,&resized))return @{@"status":@"unsupported",@"reason":@"allocation_failed",@"candidates":verified};
+                        NSInteger radius=MAX(2,[entry[@"factor"] integerValue]/2+1),cx=[r[0] integerValue]-dw/2,cy=[r[1] integerValue]-dh/2,x=-1,y=-1;double score=-2;
+                        if(!ADTStrictNCC(&screen->gray,&resized.gray,&fullIntegral,cx-radius,cy-radius,cx+radius,cy+radius,deadline,&score,&x,&y,NULL))continue;
+                        if(score<.82)continue;
+                        if(!ADTStrictCrop(screen,x,y,w,h,&crop))continue;
+                        NSDictionary *metrics=ADTStrictVerify(&resized,&crop,score);if(!metrics)return @{@"status":@"unsupported",@"reason":@"allocation_failed",@"candidates":verified};
+                        BOOL accepted=[metrics[@"accepted"] boolValue];
+                        if(!best||accepted>[best[@"accepted"] boolValue]||(accepted==[best[@"accepted"] boolValue]&&score>[best[@"similarity"] doubleValue]))
+                            best=[@{@"rect":@[@(x),@(y),@(w),@(h)],@"similarity":@(score),@"metrics":metrics,@"accepted":@(accepted)} mutableCopy];
+                    } @finally {ADTStrictFree(&resized);ADTStrictFree(&crop);}
+                }
+                if([best[@"accepted"] boolValue])break;
+            }
+            if(best)[verified addObject:best];
+        }
+    } @finally {ADTFreeIntegral(&fullIntegral);}
+    return @{@"status":@"ok",@"candidates":verified,@"timings":@{@"search_ms":@(searchMS),@"refine_ms":@((ADTStrictNow()-started)*1000-searchMS),@"objects":@(objects.count),@"scales":@(sizes.count)}};
+}
+
+static BOOL ADTAdaptiveRelation(CGRect visual,CGRect text,NSDictionary *relation) {
+    double overlap=CGRectGetWidth(CGRectIntersection(visual,text))*CGRectGetHeight(CGRectIntersection(visual,text));
+    if(!isfinite(overlap))overlap=0;
+    if(overlap/MAX(1,text.size.width*text.size.height)>=.5)return NO;
+    double gap=0,alignment=0,unit=MAX(1,MIN(visual.size.width,visual.size.height));NSString *direction=relation[@"direction"];
+    if([direction isEqual:@"right"]||[direction isEqual:@"left"]){gap=([direction isEqual:@"right"]?CGRectGetMinX(text)-CGRectGetMaxX(visual):CGRectGetMinX(visual)-CGRectGetMaxX(text))/unit;alignment=fabs(CGRectGetMidY(text)-CGRectGetMidY(visual))/MAX(visual.size.height,text.size.height);}
+    else if([direction isEqual:@"above"]||[direction isEqual:@"below"]){gap=([direction isEqual:@"below"]?CGRectGetMinY(text)-CGRectGetMaxY(visual):CGRectGetMinY(visual)-CGRectGetMaxY(text))/unit;alignment=fabs(CGRectGetMidX(text)-CGRectGetMidX(visual))/MAX(visual.size.width,text.size.width);}
+    else return NO;
+    double maxGap=relation[@"max_gap"]?[relation[@"max_gap"] doubleValue]:2.,maxAlignment=relation[@"max_alignment"]?[relation[@"max_alignment"] doubleValue]:.5;
+    return isfinite(maxGap)&&isfinite(maxAlignment)&&gap>=-.05&&gap<=maxGap&&alignment<=maxAlignment;
+}
+
+static BOOL ADTAdaptiveForegroundCovered(const ADTStrictPixels *template,NSArray *regions) {
+    NSMutableArray *channels=[NSMutableArray arrayWithObjects:[NSMutableArray array],[NSMutableArray array],[NSMutableArray array],nil];
+    for(NSInteger y=0;y<template->height;y++)for(NSInteger x=0;x<template->width;x++)if(y==0||x==0||y==template->height-1||x==template->width-1) {
+        const uint8_t *pixel=template->rgba+(y*template->width+x)*4;for(NSInteger ch=0;ch<3;ch++)[channels[ch] addObject:@(pixel[ch])];
+    }
+    double background[3];for(NSInteger ch=0;ch<3;ch++){NSArray *sorted=[channels[ch] sortedArrayUsingSelector:@selector(compare:)];background[ch]=[sorted[sorted.count/2] doubleValue];}
+    NSInteger foreground=0,missing=0;
+    for(NSInteger y=0;y<template->height;y++)for(NSInteger x=0;x<template->width;x++) {
+        const uint8_t *pixel=template->rgba+(y*template->width+x)*4;double difference=0;for(NSInteger ch=0;ch<3;ch++)difference=MAX(difference,fabs(pixel[ch]-background[ch]));if(difference<48)continue;foreground++;
+        BOOL covered=NO;for(NSDictionary *region in regions){NSArray *r=region[@"rect"];double x0=[r[0] doubleValue]*template->width-2,y0=[r[1] doubleValue]*template->height-2,x1=[r[2] doubleValue]*template->width+2,y1=[r[3] doubleValue]*template->height+2;if(x>=x0&&x<x1&&y>=y0&&y<y1){covered=YES;break;}}if(!covered)missing++;
+    }
+    return missing<=MAX(8,foreground*.01);
 }
 
 @implementation ADTImageTools
@@ -745,6 +1008,9 @@ static BOOL ADTStrictNumbers(NSDictionary *options,NSString *key,NSInteger lengt
 }
 
 + (NSDictionary *)matchImageStrict:(UIImage *)screenshot template:(UIImage *)template options:(NSDictionary *)options {
+    id profile=[options[@"image_match"] isKindOfClass:NSDictionary.class]?options[@"image_match"][@"profile"]:nil;
+    if([profile isEqual:@"adaptive-v2"])return [self matchImageAdaptive:screenshot template:template options:options];
+    if(profile&&![profile isEqual:@"strict-v1"])return @{@"status":@"unsupported",@"reason":@"unsupported_profile",@"matcher_version":@"strict-v1",@"point":NSNull.null,@"candidates":@[]};
     double started=ADTStrictNow(),timeout=5000,epoch=NSDate.date.timeIntervalSince1970*1000;
     if([options[@"timeout_ms"] isKindOfClass:NSNumber.class])timeout=[options[@"timeout_ms"] doubleValue];
     timeout=MAX(1,MIN(15000,timeout));
@@ -874,6 +1140,155 @@ static BOOL ADTStrictNumbers(NSDictionary *options,NSString *key,NSInteger lengt
     } @finally { ADTStrictFree(&full);ADTStrictFree(&shot);ADTStrictFree(&original);ADTStrictFreeFeatures(&feature); }
 }
 
++ (nullable UIImage *)adaptiveResizeImage:(UIImage *)image width:(NSInteger)width height:(NSInteger)height {
+    ADTStrictPixels source={0},output={0};
+    @try {if(!ADTStrictRead(image,&source)||!ADTAdaptiveResize(&source,width,height,&output))return nil;return ADTAdaptiveImage(&output);}
+    @finally {ADTStrictFree(&source);ADTStrictFree(&output);}
+}
+
++ (NSDictionary *)matchImageAdaptive:(UIImage *)screenshot template:(UIImage *)template options:(NSDictionary *)options {
+    double started=ADTStrictNow(),epoch=NSDate.date.timeIntervalSince1970*1000,timeout=[options[@"timeout_ms"] isKindOfClass:NSNumber.class]?[options[@"timeout_ms"] doubleValue]:10000;
+    timeout=MAX(1,MIN(10000,timeout));if([options[@"deadline_ms"] isKindOfClass:NSNumber.class])timeout=MIN(timeout,[options[@"deadline_ms"] doubleValue]-epoch);
+    double deadline=started+timeout/1000.;NSMutableArray *candidates=[NSMutableArray array];NSMutableDictionary *quality=[NSMutableDictionary dictionary];
+    NSDictionary *(^finish)(NSString *,NSString *,NSDictionary *)=^NSDictionary *(NSString *status,NSString *reason,NSDictionary *best){
+        if([reason isEqual:@"deadline_exceeded"])status=@"unstable";
+        NSMutableDictionary *result=[@{@"status":status,@"reason":reason,@"matcher_version":@"adaptive-v2",@"candidates":candidates,@"quality":quality,@"point":NSNull.null,@"timings":@{@"total_ms":@((ADTStrictNow()-started)*1000)}} mutableCopy];
+        if(best){result[@"rect"]=best[@"rect"];result[@"point"]=best[@"point"];result[@"region_matches"]=best[@"region_matches"]?:@{};}return result;
+    };
+    for(NSString *key in @[@"timeout_ms",@"deadline_ms"])if(options[key]&&!ADTAdaptiveNumber(options[key]))return finish(@"unsupported",@"invalid_deadline",nil);
+    if(!isfinite(timeout)||timeout<=0)return finish(@"unsupported",@"deadline_exceeded",nil);
+    NSDictionary *contract=[options[@"image_match"] isKindOfClass:NSDictionary.class]?options[@"image_match"]:@{};
+    NSString *canonical=[contract[@"descriptor_canonical"] isKindOfClass:NSString.class]?contract[@"descriptor_canonical"]:nil;
+    NSDictionary *descriptor=nil;
+    if(canonical) {
+        NSData *data=[canonical dataUsingEncoding:NSUTF8StringEncoding];
+        if(![ADTAdaptiveSHA(data) isEqual:contract[@"descriptor_sha256"]])return finish(@"unsupported",@"descriptor_digest_mismatch",nil);
+        id parsed=[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+        if(![parsed isKindOfClass:NSDictionary.class])return finish(@"unsupported",@"invalid_descriptor",nil);descriptor=parsed;
+        if(contract[@"descriptor"]&&![descriptor isEqual:contract[@"descriptor"]])return finish(@"unsupported",@"descriptor_mismatch",nil);
+        NSString *templateSHA=[contract[@"template_sha256"] isKindOfClass:NSString.class]?contract[@"template_sha256"]:nil;
+        NSCharacterSet *hex=[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"];
+        if(templateSHA.length!=64||[templateSHA rangeOfCharacterFromSet:hex.invertedSet].location!=NSNotFound||![templateSHA isEqual:options[@"template_sha256"]])return finish(@"unsupported",@"template_digest_mismatch",nil);
+    } else if(contract[@"descriptor"]||contract[@"descriptor_sha256"])return finish(@"unsupported",@"descriptor_canonical_missing",nil);
+    ADTStrictPixels full={0},original={0},visualPixels={0},searchPixels={0};ADTStrictFeatures features={0};
+    @try {
+        if(!ADTStrictRead(screenshot,&full)||!ADTStrictRead(template,&original)||!ADTStrictExtract(&original,&features))return finish(@"unsupported",@"invalid_image",nil);
+        if(MIN(original.width,original.height)<8||features.std<=.5||features.count==0)return finish(@"invalid_template",@"invalid_visual_template",nil);
+        [quality addEntriesFromDictionary:@{@"valid":@YES,@"size":@[@(original.width),@(original.height)],@"gray_std":@(features.std),@"reason":@"ok"}];
+        double search[4]={0,0,1,1};if(!ADTStrictNumbers(options,@"search_region",4,search)||!(0<=search[0]&&search[0]<search[2]&&search[2]<=1&&0<=search[1]&&search[1]<search[3]&&search[3]<=1))return finish(@"unsupported",@"invalid_search_region",nil);
+        NSInteger left=floor(search[0]*full.width),top=floor(search[1]*full.height),right=ceil(search[2]*full.width),bottom=ceil(search[3]*full.height);
+        CGRect searchBox=CGRectMake(left,top,right-left,bottom-top);
+        if(!ADTStrictCrop(&full,left,top,right-left,bottom-top,&searchPixels))return finish(@"unsupported",@"allocation_failed",nil);
+        NSDictionary *visual=nil;NSMutableArray *texts=[NSMutableArray array];NSArray *relations=@[];double anchor[2]={.5,.5};NSString *visualID=@"whole";CGRect visualRect=CGRectMake(0,0,original.width,original.height);
+        if(descriptor) {
+            if(!ADTAdaptiveNumber(descriptor[@"schema_version"])||![descriptor[@"schema_version"] isEqual:@1]||![descriptor[@"regions"] isKindOfClass:NSArray.class]||![descriptor[@"relations"] isKindOfClass:NSArray.class])return finish(@"unsupported",@"unsupported_descriptor",nil);
+            double size[2]={0,0};if(!ADTStrictNumbers(descriptor,@"template_size",2,size)||size[0]!=original.width||size[1]!=original.height)return finish(@"unsupported",@"descriptor_template_size_mismatch",nil);
+            NSMutableSet *ids=[NSMutableSet set];
+            for(id region in descriptor[@"regions"]) {
+                if(![region isKindOfClass:NSDictionary.class]||![region[@"id"] isKindOfClass:NSString.class]||![region[@"id"] length]||[ids containsObject:region[@"id"]]||![region[@"required"] isKindOfClass:NSNumber.class]||CFGetTypeID((__bridge CFTypeRef)region[@"required"])!=CFBooleanGetTypeID()||![region[@"required"] boolValue])return finish(@"unsupported",@"invalid_descriptor_region",nil);[ids addObject:region[@"id"]];
+                double rect[4]={0};if(!ADTStrictNumbers(region,@"rect",4,rect)||!(0<=rect[0]&&rect[0]<rect[2]&&rect[2]<=1&&0<=rect[1]&&rect[1]<rect[3]&&rect[3]<=1))return finish(@"unsupported",@"invalid_descriptor_region",nil);
+                if([region[@"kind"] isEqual:@"visual"]){if(visual)return finish(@"unsupported",@"unsupported_multiple_visual_regions",nil);visual=region;visualID=region[@"id"];visualRect=CGRectMake(floor(rect[0]*original.width+.5),floor(rect[1]*original.height+.5),floor(rect[2]*original.width+.5)-floor(rect[0]*original.width+.5),floor(rect[3]*original.height+.5)-floor(rect[1]*original.height+.5));}
+                else if([region[@"kind"] isEqual:@"text"]&&[region[@"text"] isKindOfClass:NSString.class]&&ADTAdaptiveText(region[@"text"]).length)[texts addObject:region];
+                else return finish(@"unsupported",@"invalid_descriptor_region",nil);
+            }
+            if(!visual)return finish(@"unsupported",@"visual_region_missing",nil);
+            if(!ADTAdaptiveForegroundCovered(&original,descriptor[@"regions"]))return finish(@"unsupported",@"descriptor_uncovered_foreground",nil);
+            if(!texts.count&&!CGRectEqualToRect(visualRect,CGRectMake(0,0,original.width,original.height)))return finish(@"unsupported",@"partial_visual_requires_text",nil);
+            relations=descriptor[@"relations"];
+            for(id relation in relations) {
+                if(![relation isKindOfClass:NSDictionary.class]||![relation[@"visual"] isEqual:visualID]||![ids containsObject:relation[@"text"]]||![@[@"right",@"left",@"above",@"below"] containsObject:relation[@"direction"]])return finish(@"unsupported",@"invalid_descriptor_relation",nil);
+                for(NSString *key in @[@"max_gap",@"max_alignment"])if(relation[key]&&(!ADTAdaptiveNumber(relation[key])||[relation[key] doubleValue]<0))return finish(@"unsupported",@"invalid_descriptor_relation",nil);
+            }
+            for(NSDictionary *text in texts){BOOL connected=NO;for(NSDictionary *relation in relations)if([relation[@"visual"] isEqual:visualID]&&[relation[@"text"] isEqual:text[@"id"]])connected=YES;if(!connected)return finish(@"unsupported",@"missing_text_relation",nil);}
+            NSDictionary *tap=descriptor[@"tap"];if(![tap isKindOfClass:NSDictionary.class]||![ids containsObject:tap[@"region_id"]]||!ADTStrictNumbers(tap,@"anchor",2,anchor))return finish(@"unsupported",@"invalid_descriptor_tap",nil);
+        } else if(!ADTStrictNumbers(options,@"tap_anchor",2,anchor))return finish(@"unsupported",@"invalid_tap_anchor",nil);
+        if(anchor[0]<0||anchor[0]>1||anchor[1]<0||anchor[1]>1)return finish(@"unsupported",@"invalid_tap_anchor",nil);
+        if(!ADTStrictCrop(&original,visualRect.origin.x,visualRect.origin.y,visualRect.size.width,visualRect.size.height,&visualPixels))return finish(@"unsupported",@"invalid_visual_region",nil);
+        NSMutableDictionary *layers=[NSMutableDictionary dictionary];NSMutableArray *all=[NSMutableArray array];NSDictionary *visualResult=nil;
+        if(texts.count) {
+            // Precompute immutable screenshot layers once; both complete recall
+            // branches then run in parallel without mutating shared FFT buffers.
+            NSInteger maximumFactor=MAX(1,(NSInteger)ceil(MAX(searchPixels.width,searchPixels.height)/960.));
+            for(NSInteger factor=1;factor<=maximumFactor;factor++){ADTAdaptiveLayer *layer=[[ADTAdaptiveLayer alloc] initWithPixels:&searchPixels factor:factor];if(!layer||![layer prepareFFT])return finish(@"unsupported",@"allocation_failed",nil);layers[@(factor)]=layer;}
+            __block NSDictionary *wholeResult=nil,*composedResult=nil;const ADTStrictPixels *screenPointer=&searchPixels,*wholePointer=&original,*visualPointer=&visualPixels;
+            dispatch_group_t group=dispatch_group_create();dispatch_queue_t queue=dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0);
+            dispatch_group_async(group,queue,^{@autoreleasepool{wholeResult=ADTAdaptiveVisual(screenPointer,wholePointer,deadline,[layers mutableCopy]);}});
+            dispatch_group_async(group,queue,^{@autoreleasepool{composedResult=ADTAdaptiveVisual(screenPointer,visualPointer,deadline,[layers mutableCopy]);}});
+            dispatch_group_wait(group,DISPATCH_TIME_FOREVER);visualResult=composedResult;
+            if(![wholeResult[@"status"] isEqual:@"ok"])return finish(@"unsupported",wholeResult[@"reason"]?:@"whole_search_incomplete",nil);
+            quality[@"whole_timings"]=wholeResult[@"timings"]?:@{};
+            for(NSDictionary *raw in wholeResult[@"candidates"]) {
+                if(![raw[@"accepted"] boolValue])continue;
+                CGRect wholeBox=ADTAdaptiveCGRect(raw[@"rect"]);wholeBox.origin.x+=left;wholeBox.origin.y+=top;
+                NSMutableDictionary *matches=[NSMutableDictionary dictionary];
+                for(NSDictionary *region in descriptor[@"regions"]) {
+                    NSArray *r=region[@"rect"];CGRect box=CGRectMake(wholeBox.origin.x+[r[0] doubleValue]*wholeBox.size.width,wholeBox.origin.y+[r[1] doubleValue]*wholeBox.size.height,([r[2] doubleValue]-[r[0] doubleValue])*wholeBox.size.width,([r[3] doubleValue]-[r[1] doubleValue])*wholeBox.size.height);
+                    matches[region[@"id"]]=@{@"rect":ADTAdaptiveRect(box),@"accepted":@YES,@"evidence":@"whole_image_strict"};
+                }
+                NSString *tapID=descriptor[@"tap"][@"region_id"];CGRect tapBox=ADTAdaptiveCGRect(matches[tapID][@"rect"]);
+                NSMutableDictionary *candidate=[raw mutableCopy];candidate[@"rect"]=ADTAdaptiveRect(wholeBox);candidate[@"region_matches"]=matches;candidate[@"branch"]=@"whole";
+                candidate[@"scale"]=@(wholeBox.size.width/original.width);
+                candidate[@"point"]=@[@(tapBox.origin.x+MIN(tapBox.size.width-1,anchor[0]*tapBox.size.width)),@(tapBox.origin.y+MIN(tapBox.size.height-1,anchor[1]*tapBox.size.height))];
+                [all addObject:candidate];
+            }
+        } else visualResult=ADTAdaptiveVisual(&searchPixels,&visualPixels,deadline,layers);
+        if(visualResult[@"timings"])quality[@"visual_timings"]=visualResult[@"timings"];
+        if(![visualResult[@"status"] isEqual:@"ok"]){[candidates addObjectsFromArray:all];return finish(@"unsupported",visualResult[@"reason"]?:@"visual_search_incomplete",nil);}
+        BOOL uncertain=NO;
+        for(NSDictionary *raw in visualResult[@"candidates"]) {
+            NSMutableDictionary *candidate=[raw mutableCopy];CGRect visualBox=ADTAdaptiveCGRect(raw[@"rect"]);visualBox.origin.x+=left;visualBox.origin.y+=top;candidate[@"rect"]=ADTAdaptiveRect(visualBox);
+            candidate[@"branch"]=texts.count?@"composed":@"whole";candidate[@"scale"]=@(visualBox.size.width/visualPixels.width);
+            NSMutableDictionary *matches=[@{visualID:@{@"rect":candidate[@"rect"],@"accepted":raw[@"accepted"],@"metrics":raw[@"metrics"]}} mutableCopy];
+            if(![raw[@"accepted"] boolValue]){candidate[@"region_matches"]=matches;[all addObject:candidate];continue;}
+            BOOL alreadyProven=NO;
+            if(texts.count)for(NSDictionary *other in all)if([other[@"accepted"] boolValue]&&[other[@"branch"] isEqual:@"whole"]&&ADTStrictSameRect(other[@"region_matches"][visualID][@"rect"],candidate[@"rect"])){alreadyProven=YES;break;}
+            if(alreadyProven)continue;
+            NSMutableArray *assemblies=[NSMutableArray arrayWithObject:@{@"rect":candidate[@"rect"],@"region_matches":matches}];
+            if(texts.count) {
+                double gap=2.;for(NSDictionary *relation in relations)gap=MAX(gap,[relation[@"max_gap"] doubleValue]);double expand=(gap+1)*MAX(visualBox.size.width,visualBox.size.height);
+                CGRect cropBox=CGRectIntersection(searchBox,CGRectInset(visualBox,-expand,-expand));
+                UIImage *crop=[self clipImage:screenshot x:floor(cropBox.origin.x) y:floor(cropBox.origin.y) width:ceil(cropBox.size.width) height:ceil(cropBox.size.height)];
+                NSDictionary *ocr=[self recognizeTextItems:crop deadline:epoch+(deadline-started)*1000];
+                if(![ocr[@"status"] isEqual:@"ok"]){uncertain=YES;continue;}
+                if(![ocr[@"items"] count]){uncertain=YES;continue;}
+                for(NSDictionary *text in texts) {
+                    NSMutableArray *next=[NSMutableArray array];BOOL neighborEvidence=NO;
+                    for(NSDictionary *item in ocr[@"items"]) {
+                        NSArray *box=item[@"box"];double coordinates[4]={0};
+                        if(![item[@"text"] isKindOfClass:NSString.class]||!ADTAdaptiveNumber(item[@"score"])||[item[@"score"] doubleValue]<0||[item[@"score"] doubleValue]>1||![box isKindOfClass:NSArray.class]||box.count!=4||!ADTStrictNumbers(item,@"box",4,coordinates)||coordinates[2]<=coordinates[0]||coordinates[3]<=coordinates[1])return finish(@"unsupported",@"invalid_ocr_contract",nil);
+                        CGRect textBox=CGRectMake([box[0] doubleValue]+floor(cropBox.origin.x),[box[1] doubleValue]+floor(cropBox.origin.y),[box[2] doubleValue]-[box[0] doubleValue],[box[3] doubleValue]-[box[1] doubleValue]);BOOL satisfies=YES;
+                        if(!CGRectContainsRect(cropBox,textBox)||!CGRectContainsRect(searchBox,textBox))continue;
+                        for(NSDictionary *relation in relations)if([relation[@"text"] isEqual:text[@"id"]]&&(![relation[@"visual"] isEqual:visualID]||!ADTAdaptiveRelation(visualBox,textBox,relation)))satisfies=NO;
+                        if(!satisfies)continue;
+                        if([item[@"score"] doubleValue]<.90){uncertain=YES;continue;}
+                        neighborEvidence=YES;
+                        if(![ADTAdaptiveText(item[@"text"]) isEqual:ADTAdaptiveText(text[@"text"])])continue;
+                        for(NSDictionary *assembly in assemblies){NSMutableDictionary *regionMatches=[assembly[@"region_matches"] mutableCopy];regionMatches[text[@"id"]]=@{@"rect":ADTAdaptiveRect(textBox),@"text":item[@"text"],@"score":item[@"score"],@"accepted":@YES};CGRect unionBox=CGRectUnion(ADTAdaptiveCGRect(assembly[@"rect"]),textBox);[next addObject:@{@"rect":ADTAdaptiveRect(unionBox),@"region_matches":regionMatches}];if(next.count>64)return finish(@"unsupported",@"candidate_overflow",nil);}
+                    }
+                    if(!neighborEvidence)uncertain=YES;
+                    assemblies=next;
+                }
+            }
+            for(NSDictionary *assembly in assemblies) {
+                NSMutableDictionary *logical=[candidate mutableCopy];logical[@"rect"]=assembly[@"rect"];logical[@"region_matches"]=assembly[@"region_matches"];
+                NSString *tapID=descriptor?descriptor[@"tap"][@"region_id"]:visualID;NSArray *tapRect=logical[@"region_matches"][tapID][@"rect"];if(!tapRect)return finish(@"unsupported",@"invalid_descriptor_tap",nil);
+                CGRect tapBox=ADTAdaptiveCGRect(tapRect);CGPoint tapPoint=CGPointMake(tapBox.origin.x+MIN(tapBox.size.width-1,anchor[0]*tapBox.size.width),tapBox.origin.y+MIN(tapBox.size.height-1,anchor[1]*tapBox.size.height));
+                if(!CGRectContainsRect(searchBox,ADTAdaptiveCGRect(logical[@"rect"]))||!CGRectContainsRect(searchBox,tapBox)||!CGRectContainsPoint(searchBox,tapPoint))return finish(@"unsupported",@"target_outside_search_region",nil);
+                logical[@"point"]=@[@(tapPoint.x),@(tapPoint.y)];[all addObject:logical];
+            }
+        }
+        if(uncertain||ADTStrictNow()>=deadline){[candidates addObjectsFromArray:all];return finish(@"unsupported",uncertain?@"ocr_incomplete":@"deadline_exceeded",nil);}
+        [all sortUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){NSComparisonResult flag=[b[@"accepted"] compare:a[@"accepted"]];return flag==NSOrderedSame?[b[@"similarity"] compare:a[@"similarity"]]:flag;}];
+        for(NSDictionary *candidate in all){BOOL duplicate=NO;for(NSDictionary *other in candidates)if(ADTAdaptiveSameCandidate(candidate,other))duplicate=YES;if(!duplicate)[candidates addObject:candidate];if(candidates.count>64)return finish(@"unsupported",@"candidate_overflow",nil);}
+        NSMutableArray *accepted=[NSMutableArray array];for(NSDictionary *candidate in candidates)if([candidate[@"accepted"] boolValue])[accepted addObject:candidate];
+        if(accepted.count>1)return finish(@"ambiguous",@"multiple_verified_targets",nil);
+        if(!accepted.count)return finish(@"not_found",@"no_verified_candidate",nil);
+        NSDictionary *best=accepted.firstObject;
+        for(NSDictionary *other in candidates)if(other!=best&&[other[@"similarity"] doubleValue]>=.90&&[best[@"similarity"] doubleValue]-[other[@"similarity"] doubleValue]<.03&&[other[@"metrics"][@"edge_coverage"] doubleValue]>=.80&&[other[@"metrics"][@"foreground_error"] doubleValue]<=.16)return finish(@"ambiguous",@"insufficient_margin",nil);
+        return finish(@"matched",@"unique_verified_target",best);
+    } @finally {ADTStrictFree(&full);ADTStrictFree(&original);ADTStrictFree(&visualPixels);ADTStrictFree(&searchPixels);ADTStrictFreeFeatures(&features);}
+}
+
 #pragma mark - SSIM
 
 + (CGFloat)ssimBetween:(UIImage *)a second:(UIImage *)b {
@@ -942,6 +1357,26 @@ static BOOL ADTStrictNumbers(NSDictionary *options,NSString *key,NSInteger lengt
 }
 
 #pragma mark - OCR
+
++ (NSDictionary *)recognizeTextItems:(UIImage *)image deadline:(double)deadlineMS {
+    double now=NSDate.date.timeIntervalSince1970*1000;
+    if(!isfinite(deadlineMS)||deadlineMS<=0)deadlineMS=now+10000;
+    if(now>=deadlineMS)return @{@"status":@"unsupported",@"reason":@"deadline_exceeded",@"items":@[]};
+    CGImageRef cg=image.CGImage;if(!cg)return @{@"status":@"unsupported",@"reason":@"invalid_image",@"items":@[]};
+    CGFloat width=CGImageGetWidth(cg),height=CGImageGetHeight(cg);NSMutableArray *items=[NSMutableArray array];
+    VNRecognizeTextRequest *request=[VNRecognizeTextRequest new];request.recognitionLevel=VNRequestTextRecognitionLevelAccurate;
+    request.usesLanguageCorrection=NO;request.recognitionLanguages=@[@"zh-Hans",@"en-US"];
+    // No expected text, custom words, or alternate-candidate cherry-picking.
+    VNImageRequestHandler *handler=[[VNImageRequestHandler alloc] initWithCGImage:cg options:@{}];NSError *error=nil;
+    if(![handler performRequests:@[request] error:&error])return @{@"status":@"unsupported",@"reason":@"ocr_failed",@"items":@[]};
+    if(NSDate.date.timeIntervalSince1970*1000>=deadlineMS)return @{@"status":@"unsupported",@"reason":@"deadline_exceeded",@"items":@[]};
+    for(VNRecognizedTextObservation *observation in request.results) {
+        VNRecognizedText *candidate=[observation topCandidates:1].firstObject;if(!candidate.string.length)continue;
+        CGRect box=observation.boundingBox;
+        [items addObject:@{@"text":candidate.string,@"score":@(candidate.confidence),@"box":@[@(box.origin.x*width),@((1-CGRectGetMaxY(box))*height),@(CGRectGetMaxX(box)*width),@((1-box.origin.y)*height)]}];
+    }
+    return @{@"status":@"ok",@"items":items};
+}
 
 + (NSArray<NSString *> *)recognizeText:(UIImage *)image {
     CGImageRef cgImage = image.CGImage;

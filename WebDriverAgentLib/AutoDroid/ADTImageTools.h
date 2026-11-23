@@ -41,12 +41,18 @@ NS_ASSUME_NONNULL_BEGIN
 /// Strict click locator. All rectangles and points remain original screenshot pixels.
 /// NCC proposals are checked independently for foreground, contour and spatial colour.
 + (NSDictionary *)matchImageStrict:(UIImage *)screenshot template:(UIImage *)template options:(NSDictionary *)options;
+/// adaptive-v2 keeps strict pixel verification and adds scale/descriptor recall.
++ (NSDictionary *)matchImageAdaptive:(UIImage *)screenshot template:(UIImage *)template options:(NSDictionary *)options;
+/// Deterministic half-pixel, half-up bilinear resize used by adaptive-v2.
++ (nullable UIImage *)adaptiveResizeImage:(UIImage *)image width:(NSInteger)width height:(NSInteger)height;
 
 /// 结构相似度（灰度，8x8 窗口）
 + (CGFloat)ssimBetween:(UIImage *)a second:(UIImage *)b;
 
 /// OCR：返回识别到的文本行
 + (NSArray<NSString *> *)recognizeText:(UIImage *)image;
+/// Vision observations in top-left original image pixels. Deadline is epoch ms.
++ (NSDictionary *)recognizeTextItems:(UIImage *)image deadline:(double)deadlineMS;
 
 @end
 

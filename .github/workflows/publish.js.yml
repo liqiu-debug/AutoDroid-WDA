@@ -80,6 +80,7 @@ jobs:
         path: ${{ matrix.config.zip_name }}
 
   release:
+    if: github.repository == 'appium/WebDriverAgent'
     needs: build-wda
     runs-on: macos-15
     steps:

@@ -1068,7 +1068,7 @@
 		E6B214145FE46BBFD824FAE7 /* FBMathUtils.h in Headers */ = {isa = PBXBuildFile; fileRef = EE1888381DA661C400307AA8 /* FBMathUtils.h */; };
 		E78F581F8E7530B24AC31A8B /* XCTMessagingRole_UIAutomation-Protocol.h in Headers */ = {isa = PBXBuildFile; fileRef = 92182E4007B37665AB8CD88E /* XCTMessagingRole_UIAutomation-Protocol.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		E82332D32C4E06280CBE3F4C /* FBResponseJSONPayloadTests.m in Sources */ = {isa = PBXBuildFile; fileRef = 3F5C37472190A686297D3534 /* FBResponseJSONPayloadTests.m */; };
-		E842FAA3D2EEF00C69150CC6 /* ADTImageTools.m in Sources */ = {isa = PBXBuildFile; fileRef = 2F55C725E0D083B6FA6308E1 /* ADTImageTools.m */; };
+		E842FAA3D2EEF00C69150CC6 /* ADTImageTools.m in Sources */ = {isa = PBXBuildFile; fileRef = 2F55C725E0D083B6FA6308E1 /* ADTImageTools.m */; settings = {COMPILER_FLAGS = "-O3"; }; };
 		E8E894CD81C41AC4467A4F4C /* XCTCapabilities.h in Headers */ = {isa = PBXBuildFile; fileRef = DB5400B170F08C71779CCD0E /* XCTCapabilities.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		E8E917CF8B3ADB4F24CD0B96 /* _TtC10XCTestCore19XCTReportingContext.h in Headers */ = {isa = PBXBuildFile; fileRef = 2DFEF3D0F3F006AC53F9E525 /* _TtC10XCTestCore19XCTReportingContext.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		E8F2269044A980BC2C5A79CD /* XCTest.framework in Embed XCTest dependencies */ = {isa = PBXBuildFile; fileRef = A3940554008696B8F883806E /* XCTest.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -5991,11 +5991,11 @@
 			buildSettings = {
 				CLANG_STATIC_ANALYZER_MODE = deep;
 				CODE_SIGN_IDENTITY = "Apple Development";
-				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEFINES_MODULE = NO;
 				DEVELOPMENT_TEAM = 2YQY9YF8B8;
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = 2YQY9YF8B8;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";

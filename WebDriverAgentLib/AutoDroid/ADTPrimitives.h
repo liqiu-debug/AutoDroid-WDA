@@ -37,6 +37,7 @@ JSExportAs(matchImageStrict, - (NSDictionary *)jsMatchImageStrict:(double)shotHa
 - (NSDictionary *)strictMatcherCapabilities;
 JSExportAs(ssim, - (double)jsSsim:(double)firstHandle second:(double)secondHandle);
 - (NSArray<NSString *> *)ocr:(double)handle;
+JSExportAs(ocrItems, - (NSDictionary *)jsOCRItems:(double)handle deadline:(double)deadlineMS);
 
 #pragma mark 元素
 - (NSArray<NSNumber *> *)findElements:(NSString *)specJson;
