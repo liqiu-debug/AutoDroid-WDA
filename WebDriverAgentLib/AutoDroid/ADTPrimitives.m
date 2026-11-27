@@ -181,9 +181,14 @@ didStartElement:(NSString *)elementName
 
 - (void)jsSleep:(double)milliseconds
 {
-    NSTimeInterval seconds = MAX(0.0, milliseconds / 1000.0);
-    if (seconds > 0) {
-        [NSThread sleepForTimeInterval:seconds];
+    NSTimeInterval remaining = MAX(0.0, milliseconds / 1000.0);
+    while (remaining > 0) {
+        if (self.shouldStopBlock != nil && self.shouldStopBlock()) {
+            break;
+        }
+        NSTimeInterval slice = MIN(remaining, 0.1);
+        [NSThread sleepForTimeInterval:slice];
+        remaining -= slice;
     }
 }
 

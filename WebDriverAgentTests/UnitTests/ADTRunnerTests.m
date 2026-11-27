@@ -102,4 +102,30 @@ static XCTestExpectation *ADTFetchStarted;
     XCTAssertTrue([runner.status[@"last_result"][@"error"] containsString:@"未生成执行结果"]);
     [runner replaceSchedules:@{@"items": @[]}];
 }
+
+- (void)testSleepIsInterruptibleByStopRequest
+{
+    ADTAuditRunner *runner = [[ADTAuditRunner alloc] init];
+    NSString *runId = NSUUID.UUID.UUIDString;
+    NSDictionary *bundle = @{
+        @"manifest": @{@"kind": @"case", @"platform": @"ios", @"cases": @[@{@"id": @9, @"name": @"睡眠中断"}]},
+        @"runtime_js": @"// test",
+        @"adapter_js": @"// test",
+        @"main_js": @"__adt.sleep(10000); globalThis.__AUTODROID_RESULT__ = {success: false, aborted: true};",
+        @"case_files": @[]
+    };
+    NSDate *startedAt = [NSDate date];
+    NSDictionary *started = [runner startRun:@{@"run_id": runId, @"bundle": bundle, @"notify": @NO}];
+    XCTAssertTrue([started[@"accepted"] boolValue]);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [runner stopRun];
+    });
+    XCTNSPredicateExpectation *finished = [[XCTNSPredicateExpectation alloc] initWithPredicate:
+        [NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) { return ![runner.status[@"running"] boolValue]; }]
+        object:runner];
+    XCTAssertEqual([XCTWaiter waitForExpectations:@[finished] timeout:3], XCTWaiterResultCompleted);
+    NSTimeInterval elapsed = [[NSDate date] timeIntervalSinceDate:startedAt];
+    XCTAssertLessThan(elapsed, 3.0);
+    [runner replaceSchedules:@{@"items": @[]}];
+}
 @end

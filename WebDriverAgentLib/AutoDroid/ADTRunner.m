@@ -216,6 +216,7 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
     NSString *mainSource = [bundle[@"main_js"] isKindOfClass:NSString.class] ? bundle[@"main_js"] : nil;
     NSDictionary *result = nil;
     NSNumber *startedAt = @(NSDate.date.timeIntervalSince1970 * 1000);
+    dispatch_source_t watchdogTimer = nil;
 
     @try {
         [ADTImageTools resetHandles];
@@ -233,14 +234,17 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
         }
         NSString *deviceSerial = [request[@"device_serial"] isKindOfClass:NSString.class] ? request[@"device_serial"] : nil;
         primitives.deviceSerial = deviceSerial;
+        __weak typeof(self) weakSelf = self;
         primitives.logHandler = ^(NSString *level, NSString *message) {
-            [self appendLog:[NSString stringWithFormat:@"[%@] %@", level, message]];
+            [weakSelf appendLog:[NSString stringWithFormat:@"[%@] %@", level, message]];
+        };
+        primitives.shouldStopBlock = ^BOOL {
+            return weakSelf.stopRequested;
         };
         self.primitives = primitives;
 
         JSContext *context = [[JSContext alloc] init];
         context[@"__adt"] = primitives;
-        __weak typeof(self) weakSelf = self;
         context[@"__AUTODROID_SHOULD_STOP__"] = ^BOOL {
             return weakSelf.stopRequested;
         };
@@ -290,6 +294,29 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
                                          userInfo:nil];
         }
 
+        NSTimeInterval maxDuration = 3600.0;
+        id rawMaxDuration = request[@"max_duration_seconds"];
+        if ([rawMaxDuration isKindOfClass:NSNumber.class] || [rawMaxDuration isKindOfClass:NSString.class]) {
+            double parsedDuration = [rawMaxDuration doubleValue];
+            if (parsedDuration > 0) {
+                maxDuration = MIN(MAX(parsedDuration, 10.0), 7200.0);
+            }
+        }
+        watchdogTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+        dispatch_source_set_timer(
+            watchdogTimer,
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(maxDuration * NSEC_PER_SEC)),
+            DISPATCH_TIME_FOREVER,
+            NSEC_PER_SEC
+        );
+        dispatch_source_set_event_handler(watchdogTimer, ^{
+            if (weakSelf != nil && weakSelf.running && [weakSelf.currentRunId isEqualToString:runId]) {
+                weakSelf.stopRequested = YES;
+                [weakSelf appendLog:[NSString stringWithFormat:@"[runner] 执行超过最长时限（%.0fs），已触发停止", maxDuration]];
+            }
+        });
+        dispatch_resume(watchdogTimer);
+
         NSString *mainPath = [baseDir stringByAppendingPathComponent:@"main.js"];
         [self appendLog:[NSString stringWithFormat:@"[runner] 开始执行 main.js（kind=%@）", manifest[@"kind"] ?: @"?"]];
         [context evaluateScript:mainSource withSourceURL:[NSURL fileURLWithPath:mainPath]];
@@ -306,6 +333,11 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
     } @catch (NSException *exception) {
         result = @{@"error": exception.reason ?: exception.name};
         [self appendLog:[NSString stringWithFormat:@"[runner] 执行失败: %@", exception.reason ?: exception.name]];
+    } @finally {
+        if (watchdogTimer != nil) {
+            dispatch_source_cancel(watchdogTimer);
+            watchdogTimer = nil;
+        }
     }
 
     NSMutableDictionary *summary = [NSMutableDictionary dictionary];
@@ -330,7 +362,7 @@ static NSString *const ADTRunnerRunsDirectoryName = @"autodroid_runs";
             @"kind": manifest[@"kind"] ?: @"case", @"scenario_id": manifest[@"scenario_id"] ?: NSNull.null,
             @"case_id": [manifest[@"kind"] isEqual:@"case"] && cases.count ? (cases.firstObject[@"case_id"] ?: NSNull.null) : NSNull.null,
             @"device": @{@"serial": request[@"device_serial"] ?: @"", @"brand": @"Apple"},
-            @"notify": request[@"notify"] ?: @YES, @"success": @NO, @"started_at": startedAt,
+            @"notify": request[@"notify"] ?: @NO, @"success": @NO, @"started_at": startedAt,
             @"finished_at": @(NSDate.date.timeIntervalSince1970 * 1000), @"cases": cases, @"logs": [self logsSince:0]};
         NSString *directory = [[[self documentsDirectory] stringByAppendingPathComponent:ADTRunnerRunsDirectoryName]
                               stringByAppendingPathComponent:runId];

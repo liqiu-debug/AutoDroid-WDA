@@ -88,6 +88,8 @@ JSExportAs(fsWriteBytes, - (BOOL)jsFsWriteBytes:(NSString *)path base64:(nullabl
 @property (nonatomic, copy, nullable) NSString *deviceSerial;
 /// 运行日志回调（写入 runner 的日志缓冲）
 @property (nonatomic, copy, nullable) void (^logHandler)(NSString *level, NSString *message);
+/// 停止检查回调（供长耗时原语分片轮询中止状态）
+@property (nonatomic, copy, nullable) BOOL (^shouldStopBlock)(void);
 
 @end
 
